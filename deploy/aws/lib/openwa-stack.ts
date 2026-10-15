@@ -6,6 +6,7 @@ import { type OpenwaConfig, toRetentionDays } from './config/environment';
 import { OpenwaBackup } from './constructs/openwa-backup';
 import { MOUNT_POINT, OpenwaEc2 } from './constructs/openwa-ec2';
 import { OpenwaMonitoring } from './constructs/openwa-observability';
+import { OpenwaPrivateAccess } from './constructs/openwa-private-access';
 
 /** Namespace runtime/healthcheck.sh publishes the four application states into. */
 const HEALTH_METRIC_NAMESPACE = 'OpenWA/Health';
@@ -25,7 +26,8 @@ export interface OpenwaStackProps extends StackProps {
  * The application stack: network, instance, retained session volume, secret, logs, alarms, backups.
  *
  * Deployed by GitHub Actions through the role created by OpenwaOidcStack. It creates no IAM identity
- * that a CI system could use, and no resource that exposes the application to the internet.
+ * that a CI system could use, and no resource that exposes the application to the internet. The optional private path (peering
+ * plus a private hosted zone) reaches one other VPC only.
  */
 export class OpenwaStack extends Stack {
   constructor(scope: Construct, id: string, props: OpenwaStackProps) {
@@ -68,6 +70,25 @@ export class OpenwaStack extends Stack {
       hourUtc: config.backupHourUtc,
       policyDescription: `Daily snapshots of the ${this.stackName} OpenWA session volume`,
     });
+
+    if (config.peer) {
+      const access = new OpenwaPrivateAccess(this, 'PrivateAccess', {
+        vpc: compute.vpc,
+        instance: compute.instance,
+        peer: config.peer,
+        privateDnsName: config.privateDnsName,
+      });
+
+      new CfnOutput(this, 'PeeringConnectionId', {
+        value: access.peeringConnectionId,
+        description: `VPC peering to ${config.peer.vpcId}, the only private path to the API`,
+      });
+
+      new CfnOutput(this, 'PrivateApiUrl', {
+        value: `http://${config.privateDnsName ?? compute.instance.instancePrivateIp}:2785`,
+        description: `API address from ${config.peer.vpcId}. Not resolvable or reachable from the internet.`,
+      });
+    }
 
     // ------------------------------------------------------------- outputs ----
     // Deliberately absent: the API key. CloudFormation never emits a generated secret value, and

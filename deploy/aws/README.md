@@ -991,6 +991,8 @@ validated at synth time, so `cdk synth` is the configuration checker.
 | `openwa:githubOidcProviderArn`  | unset                                                 | Set to import an existing account provider                                      |
 | `openwa:alarmEmail`             | unset                                                 | Needs manual subscription confirmation                                          |
 | `openwa:backendSecurityGroupId` | unset                                                 | **The only way an ingress rule ever appears.** Opens 2785 from that group alone |
+| `openwa:peerVpcId` / `peerVpcCidr` / `peerRouteTableIds` | unset | Peer one same-region VPC and route both ways. Requires `backendSecurityGroupId` |
+| `openwa:privateDnsName`         | unset                                                 | Private hosted zone + A record for the instance, visible only in the two VPCs |
 
 ### Reaching the API from an application backend
 
@@ -998,6 +1000,12 @@ The default is no inbound access of any kind. Options, in order of preference:
 
 1. **Backend in the same VPC** — set `openwa:backendSecurityGroupId`. One security-group-to-security-group
    rule on 2785, private, no public exposure, no extra cost.
+   **Backend in another VPC in the same account and region** — also set `openwa:peerVpcId`,
+   `openwa:peerVpcCidr` and `openwa:peerRouteTableIds` (the peer's route tables that need a route
+   back). The stack peers the two VPCs and adds a route each way. Set `openwa:privateDnsName` (e.g.
+   `openwa.internal`) for a private hosted zone associated with both VPCs, so the backend calls
+   `http://openwa.internal:2785`. The name does not resolve, and the port is not reachable, from the
+   internet. The peer CIDR must not overlap `10.42.0.0/16`. Committed config uses this for WcsBackend.
 2. **Backend elsewhere** — SSM port forwarding (as in step 8) for operational use, or a VPN or
    WireGuard/Tailscale overlay for a standing connection. No AWS ingress rule needed.
 3. **Public HTTPS** — an ALB with ACM and the API key enforced. This adds an hourly load balancer

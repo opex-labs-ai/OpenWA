@@ -44,6 +44,21 @@ export interface OpenwaConfig {
    * has no ingress rule of any kind.
    */
   readonly backendSecurityGroupId?: string;
+  /**
+   * Private path from another VPC in the same account and region. When set, the two VPCs are peered,
+   * each side gets a route to the other, and backendSecurityGroupId must name the caller's group.
+   */
+  readonly peer?: {
+    readonly vpcId: string;
+    readonly cidr: string;
+    /** Route tables in the peer VPC that need a route back to this VPC. */
+    readonly routeTableIds: readonly string[];
+  };
+  /**
+   * Name resolvable only inside this VPC and the peer VPC, pointing at the instance's private IP.
+   * Requires peer.
+   */
+  readonly privateDnsName?: string;
 }
 
 class ConfigError extends Error {
@@ -157,6 +172,46 @@ export function resolveConfig(app: App): OpenwaConfig {
     throw new ConfigError(`backendSecurityGroupId "${backendSecurityGroupId}" is not a security group id`);
   }
 
+  const peerVpcId = optionalString(app, 'peerVpcId');
+  const peerVpcCidr = optionalString(app, 'peerVpcCidr');
+  const rawRouteTables = raw(app, 'peerRouteTableIds') ?? [];
+  if (
+    !Array.isArray(rawRouteTables) ||
+    rawRouteTables.some(id => typeof id !== 'string' || !/^rtb-[0-9a-f]{8,}$/.test(id))
+  ) {
+    throw new ConfigError('peerRouteTableIds must be an array of route table ids');
+  }
+  const peerRouteTableIds = rawRouteTables as string[];
+  let peer: OpenwaConfig['peer'];
+  if (peerVpcId !== undefined || peerVpcCidr !== undefined || peerRouteTableIds.length > 0) {
+    if (peerVpcId === undefined || !/^vpc-[0-9a-f]{8,}$/.test(peerVpcId)) {
+      throw new ConfigError('peerVpcId must be a VPC id when any peer setting is given');
+    }
+    if (peerVpcCidr === undefined || !/^\d{1,3}(\.\d{1,3}){3}\/\d{1,2}$/.test(peerVpcCidr)) {
+      throw new ConfigError('peerVpcCidr must be an IPv4 CIDR when peerVpcId is set');
+    }
+    if (peerVpcCidr.startsWith('10.42.')) {
+      throw new ConfigError(`peerVpcCidr ${peerVpcCidr} overlaps this deployment's 10.42.0.0/16`);
+    }
+    if (peerRouteTableIds.length === 0) {
+      throw new ConfigError('peerRouteTableIds must list the peer route tables that need a route back');
+    }
+    if (backendSecurityGroupId === undefined) {
+      throw new ConfigError('peering without backendSecurityGroupId opens a route but no port; set both');
+    }
+    peer = { vpcId: peerVpcId, cidr: peerVpcCidr, routeTableIds: peerRouteTableIds };
+  }
+
+  const privateDnsName = optionalString(app, 'privateDnsName');
+  if (privateDnsName !== undefined) {
+    if (!/^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z][a-z0-9-]*$/.test(privateDnsName)) {
+      throw new ConfigError(`privateDnsName "${privateDnsName}" is not a DNS name`);
+    }
+    if (peer === undefined) {
+      throw new ConfigError('privateDnsName needs peerVpcId: the name only resolves inside associated VPCs');
+    }
+  }
+
   return {
     account,
     region,
@@ -175,6 +230,8 @@ export function resolveConfig(app: App): OpenwaConfig {
     githubOidcProviderArn: optionalString(app, 'githubOidcProviderArn'),
     alarmEmail,
     backendSecurityGroupId,
+    peer,
+    privateDnsName,
   };
 }
 

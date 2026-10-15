@@ -244,6 +244,64 @@ describe('OpenwaStack: network exposure', () => {
   });
 });
 
+describe('OpenwaStack: private access from a peer VPC', () => {
+  const PEER = {
+    'openwa:backendSecurityGroupId': 'sg-0123456789abcdef0',
+    'openwa:peerVpcId': 'vpc-0123456789abcdef0',
+    'openwa:peerVpcCidr': '172.31.0.0/16',
+    'openwa:peerRouteTableIds': ['rtb-0123456789abcdef0'],
+    'openwa:privateDnsName': 'openwa.internal',
+  };
+
+  it('creates no peering, route or hosted zone by default', () => {
+    const template = appStack();
+    template.resourceCountIs('AWS::EC2::VPCPeeringConnection', 0);
+    template.resourceCountIs('AWS::Route53::HostedZone', 0);
+  });
+
+  it('peers with the configured VPC and routes both ways', () => {
+    const template = appStack(PEER);
+    template.resourceCountIs('AWS::EC2::VPCPeeringConnection', 1);
+    template.hasResourceProperties('AWS::EC2::VPCPeeringConnection', { PeerVpcId: 'vpc-0123456789abcdef0' });
+    template.hasResourceProperties('AWS::EC2::Route', {
+      DestinationCidrBlock: '172.31.0.0/16',
+      VpcPeeringConnectionId: Match.anyValue(),
+    });
+    template.hasResourceProperties('AWS::EC2::Route', {
+      RouteTableId: 'rtb-0123456789abcdef0',
+      VpcPeeringConnectionId: Match.anyValue(),
+    });
+  });
+
+  it('serves the private name only inside the two VPCs', () => {
+    const template = appStack(PEER);
+    template.hasResourceProperties('AWS::Route53::HostedZone', {
+      Name: 'openwa.internal',
+      VPCs: Match.arrayWith([Match.objectLike({ VPCId: 'vpc-0123456789abcdef0' })]),
+    });
+    const zones = Object.values(template.findResources('AWS::Route53::HostedZone'));
+    expect(zones).toHaveLength(1);
+    expect((zones[0].Properties.VPCs as unknown[]).length).toBe(2);
+    template.hasResourceProperties('AWS::Route53::RecordSet', { Name: 'openwa.internal', Type: 'A' });
+  });
+
+  it('still opens the API port only to the backend group', () => {
+    const template = appStack(PEER);
+    for (const group of Object.values(template.findResources('AWS::EC2::SecurityGroup'))) {
+      for (const rule of asList(group.Properties?.SecurityGroupIngress) as Record<string, unknown>[]) {
+        expect(rule.CidrIp).toBeUndefined();
+      }
+    }
+  });
+
+  it('rejects an incomplete or conflicting peer configuration', () => {
+    expect(() => appStack({ ...PEER, 'openwa:backendSecurityGroupId': '' })).toThrow(/backendSecurityGroupId/);
+    expect(() => appStack({ ...PEER, 'openwa:peerRouteTableIds': [] })).toThrow(/peerRouteTableIds/);
+    expect(() => appStack({ ...PEER, 'openwa:peerVpcCidr': '10.42.0.0/16' })).toThrow(/overlaps/);
+    expect(() => appStack({ 'openwa:privateDnsName': 'openwa.internal' })).toThrow(/needs peerVpcId/);
+  });
+});
+
 describe('OpenwaStack: IAM', () => {
   it('gives the instance the Session Manager managed policy', () => {
     appStack().hasResourceProperties('AWS::IAM::Role', {
