@@ -38,11 +38,21 @@ for script in runtime/*.sh scripts/*.sh userdata/*.sh; do
 done
 
 step 'shellcheck'
+# SC1091: the sourced runtime config only exists on the instance.
+SHELLCHECK_ARGS=(--severity=warning --exclude=SC1091 runtime/*.sh scripts/*.sh userdata/*.sh)
 if command -v shellcheck >/dev/null 2>&1; then
-  # SC1091: the sourced runtime config only exists on the instance.
-  check 'shellcheck' shellcheck --severity=warning --exclude=SC1091 runtime/*.sh scripts/*.sh userdata/*.sh
+  check 'shellcheck' shellcheck "${SHELLCHECK_ARGS[@]}"
+elif command -v docker >/dev/null 2>&1; then
+  # Falls back to the container so a machine without shellcheck still runs the same check CI does.
+  # Skipping it locally is how an SC2034 warning once reached CI unnoticed.
+  printf '    shellcheck is not installed; using the container image instead\n'
+  # cygpath and MSYS_NO_PATHCONV keep Git Bash on Windows from rewriting either side of the -v pair.
+  SC_MOUNT="$PWD"
+  if command -v cygpath >/dev/null 2>&1; then SC_MOUNT="$(cygpath -w "$PWD")"; fi
+  check 'shellcheck (container)' env MSYS_NO_PATHCONV=1 docker run --rm \
+    -v "${SC_MOUNT}:/mnt:ro" -w /mnt koalaman/shellcheck:stable "${SHELLCHECK_ARGS[@]}"
 else
-  printf '    skipped: shellcheck is not installed\n'
+  printf '    SKIPPED: neither shellcheck nor docker is available — CI will still run this\n'
 fi
 
 step 'the bootstrap script has no unsubstituted placeholder outside its own token list'

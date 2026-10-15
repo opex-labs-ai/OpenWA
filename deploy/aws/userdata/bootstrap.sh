@@ -83,9 +83,10 @@ log "docker enabled"
 # On Nitro instances the /dev/sdf alias is not honoured: the volume shows up as an NVMe device whose
 # number is not stable. ebsnvme-id maps an NVMe device back to the alias that was requested.
 resolve_device() {
-  local alias_name attempt candidate mapped
+  local alias_name candidate mapped
   alias_name="$(basename "$DEVICE_ALIAS")"
-  for attempt in $(seq 1 60); do
+  # Up to five minutes: the attachment can lag behind boot. The counter itself is unused, hence `_`.
+  for _ in $(seq 1 60); do
     if [ -b "$DEVICE_ALIAS" ]; then
       printf '%s' "$DEVICE_ALIAS"
       return 0
