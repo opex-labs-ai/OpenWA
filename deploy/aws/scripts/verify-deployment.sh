@@ -32,8 +32,14 @@ STATUS="$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --region
   --query 'Stacks[0].StackStatus' --output text 2>/dev/null || echo 'MISSING')"
 printf 'status: %s\n' "$STATUS"
 case "$STATUS" in
-CREATE_COMPLETE | UPDATE_COMPLETE | UPDATE_ROLLBACK_COMPLETE) : ;;
+CREATE_COMPLETE | UPDATE_COMPLETE) : ;;
 MISSING) fail "stack ${STACK_NAME} does not exist in ${REGION}" ;;
+# A rolled-back stack is NOT a successful deployment. It means the update failed and CloudFormation
+# reverted it, so whatever this run intended to ship is not deployed. Treating it as passing would
+# report success for a deploy that did not happen.
+UPDATE_ROLLBACK_COMPLETE | ROLLBACK_COMPLETE)
+  fail "stack is in ${STATUS}: the last update failed and was rolled back, so this deployment did not take effect. Check: aws cloudformation describe-stack-events --stack-name ${STACK_NAME} --region ${REGION}"
+  ;;
 *) fail "stack is in ${STATUS}, not a completed state" ;;
 esac
 
@@ -60,10 +66,32 @@ printf 'ping status: %s\n' "${PING:-unknown}"
 
 # --------------------------------------- 3 & 4. on-instance state, via Run Command ----
 say 'On-instance state'
+# The probe WAITS for readiness rather than sampling once. On a first deployment, and after any
+# instance replacement, cloud-init is still installing Docker and pulling a large image when this
+# runs, so a single sample would report container=absent and fail a deployment that was simply not
+# finished yet. There is no CreationPolicy/cfn-signal on the instance, so this is where the waiting
+# has to happen. Set OPENWA_READY_TIMEOUT=0 to sample once instead.
+READY_TIMEOUT="${OPENWA_READY_TIMEOUT:-600}"
+
 # Deliberately read-only, and prints no secret. .env.runtime is only tested for existence.
 read -r -d '' PROBE <<'PROBE_SCRIPT' || true
 set -u
 DATA_DIR="$(cat /etc/openwa-data-dir 2>/dev/null || echo /opt/openwa/data)"
+
+deadline=$(($(date +%s) + READY_TIMEOUT))
+while :; do
+  now_container="$(docker inspect --format '{{.State.Status}}' openwa 2>/dev/null || echo absent)"
+  if curl -fsS -m 5 http://127.0.0.1:2785/api/health/ready >/dev/null 2>&1; then
+    now_ready=yes
+  else
+    now_ready=no
+  fi
+  if [ "$now_container" = 'running' ] && [ "$now_ready" = 'yes' ]; then break; fi
+  if [ "$(date +%s)" -ge "$deadline" ]; then break; fi
+  sleep 10
+done
+
+echo "cloud_init=$(cloud-init status 2>/dev/null | sed -n 's/^status: //p' || echo unknown)"
 echo "mounted=$(mountpoint -q "$DATA_DIR" && echo yes || echo no)"
 echo "data_uuid=$(findmnt -n -o UUID --target "$DATA_DIR" 2>/dev/null || echo none)"
 echo "disk_use=$(df -h --output=pcent "$DATA_DIR" 2>/dev/null | tail -1 | tr -d ' ' || echo unknown)"
@@ -80,21 +108,31 @@ else
 fi
 PROBE_SCRIPT
 
+# READY_TIMEOUT is prepended rather than interpolated, because the heredoc above is quoted so that
+# nothing in the probe is expanded locally by mistake.
+PROBE="READY_TIMEOUT=${READY_TIMEOUT}
+${PROBE}"
+
+printf 'waiting up to %ss for the container and API to become ready\n' "$READY_TIMEOUT"
 COMMAND_ID="$(aws ssm send-command --region "$REGION" \
   --instance-ids "$INSTANCE_ID" \
   --document-name AWS-RunShellScript \
   --comment 'openwa verify-deployment (read-only)' \
+  --timeout-seconds 900 \
   --parameters "commands=$(printf '%s' "$PROBE" | python3 -c 'import json,sys; print(json.dumps([sys.stdin.read()]))')" \
   --query 'Command.CommandId' --output text)"
 
-for _ in $(seq 1 30); do
+# Long enough to outlast the in-instance wait above plus delivery.
+for _ in $(seq 1 90); do
   INVOCATION_STATUS="$(aws ssm get-command-invocation --region "$REGION" \
     --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" \
     --query 'Status' --output text 2>/dev/null || echo Pending)"
   case "$INVOCATION_STATUS" in
   Success | Failed | Cancelled | TimedOut) break ;;
   esac
-  sleep 5
+  # 90 x 15s = 22 minutes, comfortably longer than the probe's own 10-minute readiness wait plus
+  # Run Command delivery. A shorter budget here would time out while the probe was still waiting.
+  sleep 15
 done
 
 OUTPUT="$(aws ssm get-command-invocation --region "$REGION" \
@@ -108,7 +146,18 @@ field() { printf '%s\n' "$OUTPUT" | sed -n "s/^$1=//p" | head -1; }
 
 [ "$(field mounted)" = 'yes' ] ||
   fail 'the persistent volume is NOT mounted. Do not deploy again until this is fixed: the application would initialise an empty data directory and the session would appear lost.'
-[ "$(field container)" = 'running' ] || fail "the container is $(field container), not running"
+if [ "$(field container)" != 'running' ]; then
+  # cloud-init still running means the instance has simply not finished provisioning, which is a
+  # different problem from a container that will not start, and is fixed by waiting or re-running.
+  case "$(field cloud_init)" in
+  running)
+    fail "the container is $(field container) and cloud-init is still running, so provisioning has not finished within ${READY_TIMEOUT}s. Re-run this script, or raise OPENWA_READY_TIMEOUT. Progress: the /openwa/${STACK_NAME}/system log group, stream <instance-id>/cloud-init."
+    ;;
+  *)
+    fail "the container is $(field container), not running (cloud-init: $(field cloud_init)). Check /var/log/openwa-deploy.log over Session Manager."
+    ;;
+  esac
+fi
 [ "$(field api_ready)" = 'yes' ] || fail 'the API is not answering /api/health/ready'
 
 say 'Infrastructure verification passed'

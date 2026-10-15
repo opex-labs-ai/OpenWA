@@ -34,22 +34,9 @@ INSTANCE_ID="${INSTANCE_ID:-unknown}"
 
 log() { printf '[openwa-health] %s %s\n' "$(date -Is)" "$*"; }
 
-# The key is handed to curl through a 0600 config file, never through argv, so it cannot be read out
-# of the process list by another local account.
-curl_with_key() {
-  local cfg rc
-  cfg="$(mktemp)"
-  chmod 0600 "$cfg"
-  {
-    printf 'header = "X-API-Key: '
-    sed -n 's/^API_MASTER_KEY=//p' "${APP_DIR}/.env.runtime" 2>/dev/null | tr -d '\n'
-    printf '"\n'
-  } >"$cfg"
-  curl --config "$cfg" "$@"
-  rc=$?
-  rm -f "$cfg"
-  return "$rc"
-}
+export OPENWA_ENV_RUNTIME="${APP_DIR}/.env.runtime"
+# shellcheck source=/dev/null
+. "${APP_DIR}/lib-openwa.sh"
 
 # ------------------------------------------------------------ container state ----
 container_running=0
@@ -75,7 +62,7 @@ fi
 # whether the path parameter is the session name or its UUID.
 whatsapp_connected=0
 if [ "$api_ready" = '1' ]; then
-  sessions_json="$(curl_with_key -fsS -m 10 "${BASE}/api/sessions" 2>/dev/null)"
+  sessions_json="$(openwa_curl_with_key -fsS -m 10 "${BASE}/api/sessions" 2>/dev/null)"
   if [ -n "${sessions_json:-}" ]; then
     whatsapp_connected="$(SESSION_ID="$SESSION_ID" python3 - "$sessions_json" <<'PY' 2>/dev/null || echo 0
 import json

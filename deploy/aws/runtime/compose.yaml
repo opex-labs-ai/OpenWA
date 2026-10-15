@@ -13,7 +13,18 @@ services:
     # Reaps the browser and helper children. The image's dumb-init entrypoint already does this; the
     # flag is kept because the deployment must not depend on an image-internal detail.
     init: true
-    restart: unless-stopped
+
+    # NOT `unless-stopped` or `always`. Those two make dockerd start this container itself when the
+    # daemon starts, which bypasses openwa.service entirely -- and with it the RequiresMountsFor
+    # ordering and the mountpoint guard that stop the container ever binding to an unmounted
+    # /opt/openwa/data. `on-failure` restarts a container that crashed, which is what the deployment
+    # actually needs, without making dockerd responsible for the boot path: openwa.service owns
+    # that, after the mount.
+    #
+    # The structural guarantee is not this line, though. bootstrap.sh gives docker.service a
+    # RequiresMountsFor drop-in for the data volume, so no container can start before the mount
+    # whatever its restart policy. This setting keeps the boot path going through one place.
+    restart: on-failure:5
 
     # Bound to loopback only. Nothing outside the host can reach the API: the security group has no
     # ingress rule, and even if one were added, the port is not published on a routable interface.

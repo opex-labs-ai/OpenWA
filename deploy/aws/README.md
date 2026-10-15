@@ -147,7 +147,7 @@ deploy/aws/
 │   ├── bootstrap-github-oidc.sh      idempotent OIDC provider bootstrap
 │   ├── validate-config.sh            every local check, no AWS credentials needed
 │   └── verify-deployment.sh          read-only post-deployment verification
-├── test/openwa-stack.test.ts         47 assertions over the synthesised templates
+├── test/openwa-stack.test.ts         56 assertions over the templates and the runtime bundle
 └── cdk.json                          all configuration lives here
 ```
 
@@ -264,11 +264,19 @@ registered with Systems Manager, the persistent volume is mounted, the container
 API answers — and reports, without failing, that WhatsApp is not yet authenticated. That is expected
 until step 8.
 
-### Pin the AMI immediately after the first deploy
+### The AMI is pinned, and why that matters
 
-Left unpinned, every deploy resolves the latest Amazon Linux 2023 image, so an upstream refresh will
-replace the instance during some later, unrelated deployment. `cdk synth` warns about this on every
-run. Pin it:
+`openwa:amiId` in `cdk.json` is pinned to a specific Amazon Linux 2023 image
+(`ami-0d5beb611c244cba5`, `al2023-ami-2023.12.20261013.0-kernel-6.1-x86_64`, ap-south-1).
+
+This is not tidiness. Left unpinned, every deploy resolves "latest", so any upstream AL2023 release
+changes the `ImageId` and **replaces the instance during an unrelated deployment**. That replacement
+then hits a second problem: CloudFormation creates the new volume attachment before deleting the old
+one, so `AttachVolume` fails with `VolumeInUse` and the stack rolls back. A routine deploy becomes a
+failed deploy plus a rollback. `cdk synth` emits a warning whenever the pin is missing, and a unit
+test asserts `cdk.json` still carries one.
+
+Refreshing it is a deliberate, reviewed one-line change:
 
 ```bash
 aws ssm get-parameter \
@@ -276,8 +284,10 @@ aws ssm get-parameter \
   --query Parameter.Value --output text --region ap-south-1
 ```
 
-Put the result into `cdk.json` as `openwa:amiId` and commit it. Refreshing then becomes a deliberate
-change to that one line, reviewed like any other.
+Because a refresh replaces the instance, follow
+[EC2 replacement](#ec2-replacement-and-reattaching-the-existing-session-volume) when you do it. If
+the pinned AMI is wrong for your region, the deploy fails loudly with an AMI-not-found error rather
+than silently using something else.
 
 ---
 
@@ -394,11 +404,23 @@ rather than just the session directory.
   bug waiting to happen. `bootstrap.sh` resolves the real device with `ebsnvme-id`.
 - `bootstrap.sh` runs `mkfs` **only** when `blkid` finds no filesystem. An existing filesystem is
   never reformatted.
-- `openwa.service` carries `RequiresMountsFor=/opt/openwa/data`. Without it, Docker could start
-  before the volume mounts, the bind-mount source would be the empty mountpoint directory, and the
-  application would initialise a fresh empty data directory — indistinguishable from a lost session.
-  `deploy.sh` independently refuses to start unless the path is a mount point. Two guards, because
-  this is the most plausible route to an apparent session loss.
+- **Docker itself cannot start before the volume is mounted.** `bootstrap.sh` gives `docker.service`
+  a drop-in with `RequiresMountsFor=/opt/openwa/data`, and starts Docker only after the mount
+  succeeds. This is the structural guard, and it is the one that actually closes the hole: a unit
+  dependency on `openwa.service` alone would not, because dockerd can start a container by itself
+  through its restart policy, and the `nofail` fstab entry is deliberately _not_ ordered before
+  `docker.service`. On a slow EBS attach, dockerd could otherwise come up first, resolve the bind
+  mount to the still-empty mountpoint directory on the root disk, and the application would
+  initialise a fresh data directory and show a new QR code — indistinguishable from a lost session.
+  If the volume genuinely cannot mount, Docker fails to start, the health metrics stop, the alarms
+  fire, and the instance is still reachable over SSM. That is the correct outcome.
+- **The container's restart policy is `on-failure:5`, not `unless-stopped`.** `unless-stopped` and
+  `always` make dockerd start the container when the daemon starts, which routes around
+  `openwa.service` and its guards entirely. `on-failure` still recovers a crash — including an OOM
+  kill — while leaving the boot path to one place.
+- `openwa.service` carries `RequiresMountsFor=/opt/openwa/data` and an `ExecStartPre=mountpoint -q`,
+  and `deploy.sh` independently refuses to start unless the path is a mount point. Three guards in
+  total, because this is the most plausible route to an apparent session loss.
 - `deploy.sh` writes `.openwa-auth-present` the first time it sees authentication state. If that
   marker exists but the state has gone, it **aborts** rather than starting an unauthenticated
   instance that would look like a successful deployment.
@@ -414,15 +436,27 @@ rather than just the session directory.
 
 Three workflows, deliberately separate.
 
-| Workflow              | Trigger                                                    | What it does                                                                   |
-| --------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| `aws-cdk-deploy.yml`  | push to `main` touching `deploy/aws/**`, or manual         | Lint, typecheck, test, validate, then `cdk diff` and `cdk deploy`, then verify |
-| `aws-app-deploy.yml`  | push to `main` touching `deploy/aws/runtime/**`, or manual | Sends the runtime bundle to the instance over SSM and restarts the container   |
-| `aws-cdk-destroy.yml` | manual only, with a typed confirmation                     | Destroys the stack, refusing if the volume's retention has been weakened       |
+| Workflow              | Trigger                                                | What it does                                                                   |
+| --------------------- | ------------------------------------------------------ | ------------------------------------------------------------------------------ |
+| `aws-cdk-deploy.yml`  | push to `main` touching `deploy/aws/**`, or manual     | Lint, typecheck, test, validate, then `cdk diff` and `cdk deploy`, then verify |
+| `aws-app-deploy.yml`  | automatically after a successful CDK Deploy, or manual | Sends the runtime bundle to the instance over SSM and restarts the container   |
+| `aws-cdk-destroy.yml` | manual only, with a typed confirmation                 | Destroys the stack, refusing if the volume's retention has been weakened       |
 
 Both deploy workflows run under the `production` environment, hold `id-token: write` and
 `contents: read` and nothing else, use concurrency groups that queue rather than cancel, and pin
 every action to a commit SHA. None uses `pull_request_target`.
+
+**The two are chained, not independently triggered.** `aws-app-deploy.yml` fires on
+`workflow_run` after CDK Deploy succeeds, and never on a bare push. The reason is that the runtime
+bundle reaches the instance through an SSM parameter holding its S3 URL, and only `cdk deploy`
+publishes a new bundle and updates that parameter. A push trigger on `deploy/aws/runtime/**` raced
+the infrastructure deploy and usually re-applied the _previous_ bundle while reporting success.
+Chaining also means a change to `openwa:imageRef` in `cdk.json` actually rolls out: previously it
+only rewrote the SSM config parameter and nothing re-ran `deploy.sh` to pull the new image.
+
+So a single push that touches `deploy/aws/**` runs CDK Deploy, and then App Deploy applies whatever
+it published. A manual `workflow_dispatch` of App Deploy re-applies the bundle currently published,
+which is the right tool for re-running a failed rollout.
 
 > **What automatic deployment does not include.** The deployment runs a digest-pinned _upstream_
 > image, so changes to this repository's application source do not reach the instance. If you intend
@@ -444,8 +478,10 @@ Four states are measured separately, because a green answer to one says nothing 
 | Dependencies ready              | `GET /api/health/ready` — probes both SQLite connections | `OpenWA/Health ApiReady`          |
 | **WhatsApp connected**          | a session reports status `ready`                         | `OpenWA/Health WhatsAppConnected` |
 
-`runtime/healthcheck.sh` runs every five minutes from `openwa-health.timer` and publishes all of
-them. It never logs the API key or the QR payload, and no QR code is ever exposed off the instance.
+`runtime/healthcheck.sh` runs every five minutes from `openwa-health.timer`, which `install.sh`
+enables **and starts** — without starting it, the probe would not run until the next reboot, and
+because the two alarms below treat missing data as breaching they would both fire about fifteen
+minutes after every deploy while a real outage went unreported. It publishes all of It never logs the API key or the QR payload, and no QR code is ever exposed off the instance.
 
 ### Alarms
 
@@ -544,7 +580,7 @@ sudo ls -la /opt/openwa/data/backups
 
 ### Container crash
 
-`restart: unless-stopped` plus `live-restore` in the Docker daemon handle it. If it is crash-looping,
+`restart: on-failure:5` plus `live-restore` in the Docker daemon handle it. If it is crash-looping,
 `ContainerRestarts` climbs and `ApiReady` alarms.
 
 ```bash
@@ -675,8 +711,9 @@ bash scripts/validate-config.sh
 npx cdk diff OpenwaStack
 ```
 
-Commit and push: **AWS CDK Deploy** updates the runtime config parameter, then run **AWS App Deploy**
-to pull and restart. Updating the digest does not replace the instance, because the digest lives in
+Commit and push. **AWS CDK Deploy** publishes the new runtime config parameter, and **AWS App
+Deploy** then runs automatically on its success to pull the image and restart the container — no
+second manual step. Updating the digest does not replace the instance, because the digest lives in
 the SSM parameter rather than in user data.
 
 `validate-config.sh` and the config loader both reject a reference without `@sha256:`, so a mutable
@@ -828,6 +865,35 @@ aws ssm describe-instance-information \
   --query 'InstanceInformationList[0].[PingStatus,AgentVersion]' --output table
 ```
 
+**Docker will not start: `Unit docker.service has a dependency on opt-openwa-data.mount`.** This is
+intentional, and it is the main structural guard in the deployment: `docker.service` carries a
+`RequiresMountsFor=/opt/openwa/data` drop-in, so Docker refuses to run while the session volume is
+unmounted rather than letting a container bind to the empty mountpoint directory and initialise a
+fresh data directory. Fix the mount, not the drop-in:
+
+```bash
+aws ssm start-session --target "$INSTANCE_ID"
+sudo systemctl status opt-openwa-data.mount
+lsblk -f                      # is the volume attached at all?
+sudo mount -a && sudo systemctl start docker
+```
+
+If the volume is genuinely detached, see
+[EC2 replacement](#ec2-replacement-and-reattaching-the-existing-session-volume) before anything else.
+
+**Verification fails with `container=absent` and `cloud_init=running`.** The instance has not
+finished provisioning — on a first deploy it is still installing Docker and pulling a large image.
+`verify-deployment.sh` already waits up to ten minutes for the container and API, so this means it
+took longer than that. Re-run it, or give it longer:
+
+```bash
+OPENWA_READY_TIMEOUT=1200 bash scripts/verify-deployment.sh
+```
+
+Progress is in the `/openwa/OpenwaStack/system` log group, stream `<instance-id>/cloud-init`. There
+is no `CreationPolicy`/`cfn-signal` on the instance, so CloudFormation reports the stack complete
+before the software is up; the waiting lives in the verify script instead.
+
 **`deploy.sh` says `/opt/openwa/data is not a mount point`.** This is the guard working. The volume
 is not attached or not mounted. Do not force it through: the application would create a fresh empty
 data directory and the session would appear lost. Check the attachment, then
@@ -851,7 +917,7 @@ engine is `whatsapp-web.js` on a 2 GiB instance. See [sizing](#on-instance-sizin
 **`cdk diff` wants to replace the instance.** Something changed in `userdata/bootstrap.sh`, the AMI
 or the instance type. The volume is retained either way, but read
 [EC2 replacement](#ec2-replacement-and-reattaching-the-existing-session-volume) first. If it is an
-unintended AMI refresh, pin `openwa:amiId`.
+unintended AMI refresh, check that `openwa:amiId` is still pinned.
 
 ---
 
@@ -914,7 +980,7 @@ validated at synth time, so `cdk synth` is the configuration checker.
 | `openwa:rootVolumeGib`          | `20`                                                  | Ephemeral; holds Docker images                                                  |
 | `openwa:dataVolumeGib`          | `20`                                                  | The retained session volume                                                     |
 | `openwa:imageRef`               | digest-pinned `0.24.0`                                | **Must** contain `@sha256:`                                                     |
-| `openwa:amiId`                  | unset                                                 | Pin it after the first deploy; see [step 7](#7-initial-cdk-deployment)          |
+| `openwa:amiId`                  | pinned                                                | Refresh deliberately; see [step 7](#7-initial-cdk-deployment)                   |
 | `openwa:engineType`             | `baileys`                                             | or `whatsapp-web.js`, which needs a bigger instance                             |
 | `openwa:sessionId`              | `primary`                                             | Must match the session you create; the health probe uses it                     |
 | `openwa:logRetentionDays`       | `14`                                                  | Must be a value CloudWatch accepts                                              |
@@ -951,7 +1017,7 @@ Run locally, all passing at the time of writing:
 cd deploy/aws
 npm ci
 npx tsc --noEmit                 # clean
-npm test                         # 47 assertions, all passing
+npm test                         # 56 assertions, all passing
 npx cdk synth OpenwaStack        # synthesises
 npx cdk synth OpenwaOidcStack    # synthesises
 bash scripts/validate-config.sh  # all checks pass
@@ -971,14 +1037,20 @@ through step 8 — including the reboot in 8.6 — before relying on any of it.
 ## Limitations
 
 - **Fork-local code is not deployed.** The pinned image is the upstream published one.
-- **`CfnVolumeAttachment` during instance replacement.** The volume always survives, but
-  CloudFormation may not sequence detach and reattach cleanly, and the replacement may need the
-  manual runbook rather than completing unattended.
+- **Instance replacement needs a hand.** On replacement CloudFormation creates the new volume
+  attachment before deleting the old one, so `AttachVolume` fails with `VolumeInUse` and the stack
+  rolls back. The volume always survives, but the replacement does not complete unattended — follow
+  [EC2 replacement](#ec2-replacement-and-reattaching-the-existing-session-volume). Pinning the AMI
+  removes the common accidental trigger; what remains are deliberate changes to `openwa:amiId`,
+  `openwa:instanceType` or `userdata/bootstrap.sh`. Moving the attach into `bootstrap.sh` (tag
+  lookup, wait for `available`, attach) would fix this properly and is the obvious next change, but
+  it needs care not to attach one writable session volume to two instances.
 - **Single instance, single AZ.** An AZ outage is downtime. This cannot be made highly available: the
   application keeps engine state in memory and must run exactly one replica per session volume.
 - **One WhatsApp account.** Supporting a second means a second session on the same instance, with the
   memory implications above, and the health probe currently tracks one session id.
-- **The AMI is unpinned until you pin it.** See [step 7](#7-initial-cdk-deployment).
+- **An AMI refresh still means an instance replacement.** The AMI is pinned, so this only happens
+  when you deliberately bump `openwa:amiId` — but when you do, see the attachment caveat above.
 
 ---
 

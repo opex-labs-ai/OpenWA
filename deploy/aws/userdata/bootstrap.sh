@@ -76,8 +76,9 @@ cat >/etc/docker/daemon.json <<'JSON'
   "log-opts": { "max-size": "10m", "max-file": "3" }
 }
 JSON
-systemctl enable --now docker
-log "docker enabled"
+# Deliberately NOT started here. Docker must not run until the session volume is mounted, so both
+# the drop-in and the start happen after the mount below.
+log "docker configured (start deferred until the data volume is mounted)"
 
 # --------------------------------------------------------- persistent volume ----
 # On Nitro instances the /dev/sdf alias is not honoured: the volume shows up as an NVMe device whose
@@ -149,6 +150,29 @@ install -d -o "$RUN_UID" -g "$RUN_GID" -m 0750 "$MOUNT_POINT"
 for sub in sessions baileys media plugins; do
   install -d -o "$RUN_UID" -g "$RUN_GID" -m 0750 "${MOUNT_POINT}/${sub}"
 done
+
+# ------------------------------------------------------- docker, after the mount ----
+# THE structural guard against an apparent session loss.
+#
+# openwa.service carries RequiresMountsFor, but that only governs the unit. Docker can start a
+# container by itself through its restart policy, and the fstab entry is `nofail`, which means the
+# mount is NOT ordered before local-fs.target and therefore not before docker.service. On a slow
+# EBS attach, dockerd could come up first, resolve the bind mount to the still-empty mountpoint
+# directory on the root disk, and the application would initialise a fresh data directory and show
+# a new QR code -- indistinguishable from having lost the session.
+#
+# Making the mount a requirement of docker.service itself closes that hole regardless of any
+# container's restart policy: no mount, no Docker, so nothing can write to the wrong directory.
+# If the volume genuinely cannot mount, Docker fails to start, the health metrics stop, and the
+# alarms fire -- which is the correct outcome, and the instance is still reachable over SSM.
+install -d -m 0755 /etc/systemd/system/docker.service.d
+cat >/etc/systemd/system/docker.service.d/10-openwa-data-mount.conf <<DROPIN
+[Unit]
+RequiresMountsFor=${MOUNT_POINT}
+DROPIN
+systemctl daemon-reload
+systemctl enable --now docker
+log "docker enabled, gated on ${MOUNT_POINT} being mounted"
 
 # ------------------------------------------------------------------- swap ----
 # Insurance against a transient spike on a 2 GiB host. Not a substitute for sizing: switching to the

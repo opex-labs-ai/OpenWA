@@ -145,11 +145,18 @@ jobs:
         if: always()
         env:
           AWS_REGION: ${{ vars.AWS_REGION }}
+          # The report runs on failure too, so that the session volume can be confirmed intact after
+          # an aborted run. But it must not then claim the stack was destroyed, which it did not.
+          JOB_STATUS: ${{ job.status }}
         run: |
           set -euo pipefail
-          cat <<'NOTE'
-          The stack has been destroyed. The following were deliberately kept.
-          NOTE
+          if [ "$JOB_STATUS" = 'success' ]; then
+            echo 'The stack has been destroyed. The following were deliberately kept.'
+          else
+            echo "This run ended as ${JOB_STATUS}, so the stack was NOT destroyed: the typed"
+            echo 'confirmation, the volume retention guard, or cdk destroy itself did not complete.'
+            echo 'The session volume and snapshots are listed below so you can confirm they are intact.'
+          fi
           echo '--- retained volumes ---'
           aws ec2 describe-volumes \
             --filters 'Name=tag:openwa:backup,Values=true' \

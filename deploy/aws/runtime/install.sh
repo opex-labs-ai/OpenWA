@@ -46,7 +46,13 @@ for unit in openwa.service openwa-health.service openwa-health.timer; do
     "${APP_DIR}/${unit}" >"/etc/systemd/system/${unit}"
 done
 systemctl daemon-reload
-systemctl enable openwa.service openwa-health.timer >/dev/null 2>&1
-log "systemd units installed"
+# openwa.service is enabled but not started here: deploy.sh below brings the container up, after it
+# has run the volume and session guards.
+systemctl enable openwa.service >/dev/null 2>&1
+# The health timer is enabled AND started. Without --now it would not run until the next reboot,
+# and because ApiNotReady and WhatsAppConnected treat missing data as breaching, both alarms would
+# fire about fifteen minutes after every deploy while a genuine outage went unnoticed.
+systemctl enable --now openwa-health.timer >/dev/null 2>&1
+log "systemd units installed; health timer active ($(systemctl is-active openwa-health.timer 2>/dev/null || echo unknown))"
 
 exec "${APP_DIR}/deploy.sh"

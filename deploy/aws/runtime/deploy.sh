@@ -24,11 +24,9 @@ die() {
   exit 1
 }
 
-# Masks anything that looks like a credential in captured output. Applied to every diagnostic before
-# it is printed, because this log is shipped to CloudWatch and surfaced in workflow output.
-redact() {
-  sed -E 's/((API_MASTER_KEY|api[_-]?key|authorization|x-api-key|token|secret|password)[[:space:]]*[:=][[:space:]]*"?)[^[:space:],"}]+/\1***REDACTED***/Ig'
-}
+export OPENWA_ENV_RUNTIME="${APP_DIR}/.env.runtime"
+# shellcheck source=/dev/null
+. "${APP_DIR}/lib-openwa.sh"
 
 COMPOSE=(docker compose --file "${APP_DIR}/compose.yaml")
 
@@ -124,25 +122,6 @@ write_runtime_env() {
 write_runtime_env
 log "runtime secret written to ${APP_DIR}/.env.runtime (mode 0600)"
 
-# Runs curl with the API key supplied through a 0600 config file rather than argv, so the key is
-# never visible in the process list.
-curl_with_key() {
-  local cfg rc
-  cfg="$(mktemp)"
-  chmod 0600 "$cfg"
-  {
-    printf 'header = "X-API-Key: '
-    sed -n 's/^API_MASTER_KEY=//p' "${APP_DIR}/.env.runtime" | tr -d '\n'
-    printf '"\n'
-  } >"$cfg"
-  set +e
-  curl --config "$cfg" "$@"
-  rc=$?
-  set -e
-  rm -f "$cfg"
-  return "$rc"
-}
-
 # ------------------------------------------------------ 6. validate and pull ----
 "${COMPOSE[@]}" config -q || die "compose configuration is invalid"
 log "compose configuration valid"
@@ -161,9 +140,9 @@ log "image pulled"
 
 capture_diagnostics() {
   log '--- diagnostics (secrets redacted) ---'
-  "${COMPOSE[@]}" ps 2>&1 | redact || true
-  docker inspect --format '{{json .State}}' openwa 2>&1 | redact || true
-  docker logs --tail 200 openwa 2>&1 | redact || true
+  "${COMPOSE[@]}" ps 2>&1 | openwa_redact || true
+  docker inspect --format '{{json .State}}' openwa 2>&1 | openwa_redact || true
+  docker logs --tail 200 openwa 2>&1 | openwa_redact || true
   df -h "$DATA_DIR" / 2>&1 || true
   free -m 2>&1 || true
   log '--- end diagnostics ---'
@@ -210,7 +189,7 @@ wait_for_http_health || {
 
 # Application readiness: an authenticated call through the API-key layer. Proves the key in Secrets
 # Manager actually works against this data volume, which HTTP health cannot tell us.
-API_CODE="$(curl_with_key -s -o /dev/null -w '%{http_code}' -m 15 \
+API_CODE="$(openwa_curl_with_key -s -o /dev/null -w '%{http_code}' -m 15 \
   "http://127.0.0.1:${OPENWA_PORT}/api/sessions" || true)"
 case "$API_CODE" in
 200)

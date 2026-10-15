@@ -486,9 +486,15 @@ describe('runtime bundle', () => {
   });
 
   it('passes the API key by config file rather than on a command line', () => {
+    // The helper lives in one place now. It was duplicated in both scripts and had already drifted,
+    // which is how a security property ends up true in one copy and not the other.
+    expect(read('lib-openwa.sh')).toContain('curl --config');
     for (const file of ['deploy.sh', 'healthcheck.sh']) {
       const script = read(file);
-      expect(script).toContain('curl --config');
+      expect(script).toContain('lib-openwa.sh');
+      expect(script).toContain('openwa_curl_with_key');
+      // No local redefinition: that is what allowed the two copies to diverge.
+      expect(script).not.toMatch(/^curl_with_key\(\)/m);
       // The key must never appear as an -H argument, where `ps` would expose it.
       expect(script).not.toMatch(/-H\s+["']X-API-Key:\s*\$/);
     }
@@ -504,5 +510,77 @@ describe('runtime bundle', () => {
 
   it('orders the container start after the persistent mount', () => {
     expect(read('openwa.service')).toContain('RequiresMountsFor=@@DATA_DIR@@');
+  });
+
+  // The failure these three guard against: dockerd starting the container by itself on boot,
+  // before the EBS volume is mounted, so the bind mount resolves to the empty mountpoint directory
+  // on the root disk and the application initialises a fresh data directory. That is
+  // indistinguishable from a lost session, and it is the whole reason this deployment exists in
+  // this shape.
+  it('does not let dockerd start the container on its own', () => {
+    const compose = read('compose.yaml');
+    expect(compose).not.toMatch(/^\s*restart:\s*(unless-stopped|always)\s*$/m);
+    // on-failure still recovers a crash, which the deployment requires, without owning the boot path.
+    expect(compose).toMatch(/^\s*restart:\s*on-failure(:\d+)?\s*$/m);
+  });
+
+  it('makes the data mount a precondition of docker.service itself', () => {
+    const bootstrap = fs.readFileSync(path.join(__dirname, '..', 'userdata', 'bootstrap.sh'), 'utf8');
+    expect(bootstrap).toContain('docker.service.d/10-openwa-data-mount.conf');
+    expect(bootstrap).toContain('RequiresMountsFor=${MOUNT_POINT}');
+  });
+
+  it('starts docker only after the volume is mounted', () => {
+    const bootstrap = fs.readFileSync(path.join(__dirname, '..', 'userdata', 'bootstrap.sh'), 'utf8');
+    const mounted = bootstrap.indexOf('mounted ${MOUNT_POINT} (UUID');
+    const dockerStart = bootstrap.indexOf('systemctl enable --now docker');
+    expect(mounted).toBeGreaterThan(0);
+    expect(dockerStart).toBeGreaterThan(0);
+    // Ordering within the script is the assertion: enabling docker before the mount is the bug.
+    expect(dockerStart).toBeGreaterThan(mounted);
+  });
+
+  it('starts the health timer, not merely enables it', () => {
+    // Without --now the probe would not run until the next reboot, and because ApiReady and
+    // WhatsAppConnected treat missing data as breaching, both alarms would fire ~15 minutes after
+    // every deploy while a real outage went unreported.
+    expect(read('install.sh')).toContain('systemctl enable --now openwa-health.timer');
+  });
+
+  it('refuses to call a rolled-back stack a successful deployment', () => {
+    const verify = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'verify-deployment.sh'), 'utf8');
+    expect(verify).toMatch(/UPDATE_ROLLBACK_COMPLETE \| ROLLBACK_COMPLETE\)/);
+    expect(verify).not.toMatch(/CREATE_COMPLETE \| UPDATE_COMPLETE \| UPDATE_ROLLBACK_COMPLETE/);
+  });
+
+  it('waits for readiness instead of sampling once', () => {
+    // There is no CreationPolicy/cfn-signal on the instance, so a single sample would fail the
+    // first deployment while cloud-init was still pulling the image.
+    const verify = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'verify-deployment.sh'), 'utf8');
+    expect(verify).toContain('OPENWA_READY_TIMEOUT');
+    expect(verify).toContain('cloud_init=');
+  });
+});
+
+describe('committed configuration', () => {
+  const cdkJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'cdk.json'), 'utf8')) as {
+    context: Record<string, unknown>;
+  };
+
+  it('pins the image to a digest', () => {
+    expect(String(cdkJson.context['openwa:imageRef'])).toContain('@sha256:');
+  });
+
+  it('pins the AMI', () => {
+    // An unpinned AMI means any new AL2023 release replaces the instance on the next deploy, and
+    // CloudFormation creates the replacement volume attachment before deleting the old one, so that
+    // replacement fails with VolumeInUse and rolls the stack back.
+    expect(String(cdkJson.context['openwa:amiId'])).toMatch(/^ami-[0-9a-f]{8,}$/);
+  });
+
+  it('keeps the engine and session id non-empty', () => {
+    // An empty ENGINE_TYPE silently selects the Chromium engine, which does not fit this instance.
+    expect(cdkJson.context['openwa:engineType']).toBe('baileys');
+    expect(String(cdkJson.context['openwa:sessionId'])).not.toBe('');
   });
 });
