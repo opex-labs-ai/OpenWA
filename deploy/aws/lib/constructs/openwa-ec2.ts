@@ -222,6 +222,8 @@ export class OpenwaEc2 extends Construct {
         `OPENWA_SYSTEM_LOG_GROUP=${props.systemLogGroup.logGroupName}`,
         `OPENWA_METRIC_NAMESPACE=${props.metricNamespace}`,
         `OPENWA_PORT=${APP_PORT}`,
+        // Publish beyond loopback only when an ingress rule exists for something to use it.
+        `OPENWA_BIND_ADDRESS=${config.backendSecurityGroupId ? '0.0.0.0' : '127.0.0.1'}`,
         `OPENWA_MEM_LIMIT=${MEM_LIMIT}`,
         `OPENWA_PIDS_LIMIT=${PIDS_LIMIT}`,
         '',
