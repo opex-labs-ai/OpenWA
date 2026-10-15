@@ -1,0 +1,184 @@
+name: AWS App Deploy
+
+# Application deployment: ships the runtime bundle to the running instance and restarts the
+# container. Kept apart from infrastructure provisioning so that a failed application rollout
+# cannot cascade into an infrastructure change, and so this can be re-run on its own.
+#
+# Note what this does NOT do. The deployment runs a digest-pinned upstream image
+# (ghcr.io/rmyndharis/openwa), so changes to this repository's application source do not reach the
+# instance. Shipping fork-local code means building and publishing an image and moving
+# openwa:imageRef to it. Changing the pinned digest is an infrastructure change, because the digest
+# lives in the CDK configuration.
+# Chained after AWS CDK Deploy, never triggered by a bare push.
+#
+# Why: the runtime bundle reaches the instance through an SSM parameter holding its S3 URL, and only
+# `cdk deploy` publishes a new bundle and updates that parameter. A push trigger on
+# deploy/aws/runtime/** raced the infrastructure deploy and usually re-applied the OLD bundle while
+# reporting success -- the worst kind of failure, a silent no-op.
+#
+# Chaining also fixes a second gap: bumping openwa:imageRef in cdk.json only rewrote the SSM config
+# parameter, and nothing re-ran deploy.sh to pull the new image. The old runtime/** path filter
+# excluded cdk.json entirely, so an image upgrade never actually rolled out.
+on:
+  workflow_run:
+    workflows: ['AWS CDK Deploy']
+    types: [completed]
+    branches: [main]
+  workflow_dispatch: {}
+
+# Its own group: an application rollout and an infrastructure deploy are independent, and serialising
+# them against each other would make a routine restart wait on CloudFormation.
+concurrency:
+  group: openwa-aws-app
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy the runtime bundle over SSM
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    # Never roll out on the back of a failed or cancelled infrastructure deploy: the bundle and the
+    # config parameter it reads may not have been published.
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # workflow_run checks out the default branch by default; pin to the commit that was
+          # actually deployed so the bundle validated here is the one that shipped. Null on a manual
+          # run, which then falls back to the ref it was dispatched from.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: .nvmrc
+          cache: 'npm'
+          cache-dependency-path: deploy/aws/package-lock.json
+
+      - name: Install dependencies
+        working-directory: deploy/aws
+        run: npm ci
+
+      # The bundle travels to the instance as a CDK S3 asset, so a changed script must be published
+      # before the instance can fetch it. Validated first: a syntax error in deploy.sh would
+      # otherwise be discovered on the machine that holds the session.
+      - name: Validate the runtime bundle
+        working-directory: deploy/aws
+        run: bash scripts/validate-config.sh
+
+      - name: Assume the deployment role
+        uses: aws-actions/configure-aws-credentials@00943011d9042930efac3dcd3a170e4273319bc8 # v5.1.0
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: openwa-app-deploy-${{ github.run_id }}
+          mask-aws-account-id: true
+
+      - name: Resolve the target instance
+        id: target
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+        run: |
+          set -euo pipefail
+          instance_id="$(aws cloudformation describe-stacks \
+            --stack-name OpenwaStack \
+            --query "Stacks[0].Outputs[?OutputKey=='InstanceId'].OutputValue" \
+            --output text)"
+          if [ -z "$instance_id" ] || [ "$instance_id" = 'None' ]; then
+            echo 'Could not resolve the instance id from the OpenwaStack outputs.' >&2
+            echo 'Deploy the infrastructure first with the AWS CDK Deploy workflow.' >&2
+            exit 1
+          fi
+          echo "instance_id=${instance_id}" >> "$GITHUB_OUTPUT"
+          echo "Target instance: ${instance_id}"
+
+      # openwa-refresh reads the bundle location from SSM, downloads it, and hands over to
+      # install.sh and then deploy.sh. deploy.sh is the component that refuses to start on an
+      # unmounted volume or a wiped session, and that rolls back a failed image.
+      - name: Run the deployment on the instance
+        id: send
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          INSTANCE_ID: ${{ steps.target.outputs.instance_id }}
+        run: |
+          set -euo pipefail
+          command_id="$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name AWS-RunShellScript \
+            --comment "openwa app deploy ${GITHUB_RUN_ID}" \
+            --timeout-seconds 900 \
+            --parameters 'commands=["/usr/local/bin/openwa-refresh"]' \
+            --query 'Command.CommandId' --output text)"
+          echo "command_id=${command_id}" >> "$GITHUB_OUTPUT"
+          echo "SSM command: ${command_id}"
+
+      - name: Wait for it to finish
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          INSTANCE_ID: ${{ steps.target.outputs.instance_id }}
+          COMMAND_ID: ${{ steps.send.outputs.command_id }}
+        run: |
+          set -euo pipefail
+          status='Pending'
+          for _ in $(seq 1 120); do
+            status="$(aws ssm get-command-invocation \
+              --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" \
+              --query 'Status' --output text 2>/dev/null || echo Pending)"
+            case "$status" in
+              Success|Failed|Cancelled|TimedOut) break ;;
+            esac
+            sleep 10
+          done
+
+          echo "--- deploy.sh output (the script redacts credentials before printing) ---"
+          aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" \
+            --query 'StandardOutputContent' --output text || true
+
+          if [ "$status" != 'Success' ]; then
+            echo "--- stderr ---" >&2
+            aws ssm get-command-invocation \
+              --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" \
+              --query 'StandardErrorContent' --output text >&2 || true
+            echo "Application deployment ended as ${status}." >&2
+            exit 1
+          fi
+          echo "Application deployment succeeded."
+
+      - name: Verify the result
+        working-directory: deploy/aws
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          STACK_NAME: OpenwaStack
+        run: bash scripts/verify-deployment.sh
+
+      - name: Explain the failure
+        if: failure()
+        run: |
+          cat <<'NOTE'
+          The application deployment failed.
+
+          deploy.sh is written so that a failure leaves the session intact: it refuses to start when
+          the persistent volume is not mounted or when authentication state has disappeared, it never
+          removes a volume, and it rolls back to the previously running image when the new one does
+          not pass validation.
+
+          Where to look:
+            1. The output printed above, which deploy.sh has already redacted.
+            2. CloudWatch log group /openwa/OpenwaStack/system, stream <instance-id>/deploy
+            3. On the instance, over Session Manager:
+                 aws ssm start-session --target <instance-id>
+                 sudo tail -n 200 /var/log/openwa-deploy.log
+                 sudo docker logs --tail 200 openwa
+
+          If deploy.sh refused because authentication state is missing, do NOT remove the marker file
+          to force it through until you understand why. Restoring the volume from an EBS snapshot
+          keeps the session; starting fresh costs a QR re-scan.
+          NOTE

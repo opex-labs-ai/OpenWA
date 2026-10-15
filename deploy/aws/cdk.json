@@ -1,0 +1,36 @@
+{
+  "app": "npx ts-node --prefer-ts-exts bin/openwa.ts",
+  "watch": {
+    "include": ["**"],
+    "exclude": ["README.md", "cdk*.json", "**/*.d.ts", "**/*.js", "tsconfig.json", "package*.json", "node_modules"]
+  },
+  "context": {
+    "openwa:region": "ap-south-1",
+    "openwa:instanceType": "t3.small",
+    "openwa:rootVolumeGib": 20,
+    "openwa:dataVolumeGib": 20,
+    "openwa:imageRef": "ghcr.io/rmyndharis/openwa@sha256:5a2cb7a85e58f33967245dbda174de6aa8c0d0e36d0fced42fb9c6ef83e110d5",
+    "openwa:engineType": "baileys",
+    "_comment_optional": "An empty string means unset. See README.",
+    "_comment_amiId": "PINNED ON PURPOSE. Resolving the latest AL2023 image on every deploy means an upstream refresh replaces the instance during an unrelated deploy, and CloudFormation creates the new volume attachment before deleting the old one, so that replacement fails with VolumeInUse and rolls back. Refresh deliberately: aws ssm get-parameter --name /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64 --query Parameter.Value --output text --region ap-south-1 (al2023-ami-2023.12.20261013.0-kernel-6.1-x86_64, ap-south-1).",
+    "openwa:amiId": "ami-0d5beb611c244cba5",
+    "openwa:alarmEmail": "",
+    "openwa:backendSecurityGroupId": "sg-05b4fea8f7305ea48",
+    "_comment_peer": "Private API access from WcsBackend (default VPC). Route table is that VPC's main table. Reach it at http://openwa.internal:2785 from inside either VPC.",
+    "openwa:peerVpcId": "vpc-079ce24c073ae35a5",
+    "openwa:peerVpcCidr": "172.31.0.0/16",
+    "openwa:peerRouteTableIds": ["rtb-07025e2a9b5d5fc7f"],
+    "openwa:privateDnsName": "openwa.internal",
+    "openwa:githubOidcProviderArn": "arn:aws:iam::059311035457:oidc-provider/token.actions.githubusercontent.com",
+    "openwa:sessionId": "primary",
+    "openwa:logRetentionDays": 14,
+    "openwa:backupRetentionCount": 7,
+    "openwa:backupHourUtc": 3,
+    "openwa:githubOwnerRepo": "opex-labs-ai/OpenWA",
+    "openwa:githubDeployRefs": ["repo:opex-labs-ai/OpenWA:environment:production"],
+    "@aws-cdk/aws-iam:minimizePolicies": true,
+    "@aws-cdk/core:checkSecretUsage": true,
+    "@aws-cdk/core:enablePartitionLiterals": true,
+    "@aws-cdk/aws-ec2:ebsDefaultGp3Volume": true
+  }
+}

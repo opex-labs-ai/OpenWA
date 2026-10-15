@@ -1,0 +1,25 @@
+[Unit]
+Description=OpenWA WhatsApp API gateway (docker compose)
+Documentation=file://@@APP_DIR@@/compose.yaml
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+# The whole point of this line. Without it Docker can start before the EBS volume is mounted, the
+# bind-mount source is then the empty mountpoint directory, and the application initialises a fresh
+# empty data directory -- which is indistinguishable from having lost the WhatsApp session.
+RequiresMountsFor=@@DATA_DIR@@
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=@@APP_DIR@@
+# Second belt: refuse to start unless the data directory really is a mount.
+ExecStartPre=/usr/bin/mountpoint -q @@DATA_DIR@@
+ExecStartPre=/usr/bin/test -s @@APP_DIR@@/.env.runtime
+ExecStart=/usr/bin/docker compose --file @@APP_DIR@@/compose.yaml up -d --remove-orphans
+# stop, never `down -v`: nothing here may remove volumes.
+ExecStop=/usr/bin/docker compose --file @@APP_DIR@@/compose.yaml stop
+TimeoutStartSec=600
+
+[Install]
+WantedBy=multi-user.target

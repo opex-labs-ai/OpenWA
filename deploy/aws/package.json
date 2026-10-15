@@ -1,0 +1,44 @@
+{
+  "name": "openwa-aws-deploy",
+  "version": "0.0.0",
+  "private": true,
+  "description": "AWS CDK v2 deployment for OpenWA: one EC2 instance, Docker, persistent EBS session storage",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.19"
+  },
+  "bin": {
+    "openwa-aws": "bin/openwa.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w",
+    "test": "jest",
+    "lint": "eslint \"{bin,lib,test}/**/*.ts\"",
+    "lint:fix": "eslint \"{bin,lib,test}/**/*.ts\" --fix",
+    "format": "prettier --write \"{bin,lib,test}/**/*.ts\"",
+    "format:check": "prettier --check \"{bin,lib,test}/**/*.ts\"",
+    "synth": "cdk synth",
+    "diff": "cdk diff",
+    "deploy": "cdk deploy",
+    "destroy": "cdk destroy",
+    "cdk": "cdk"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/jest": "^30.0.0",
+    "@types/node": "^22",
+    "aws-cdk": "2.1145.0",
+    "eslint": "^10.12.0",
+    "jest": "^30.5.2",
+    "prettier": "^3.9.9",
+    "ts-jest": "^29.4.14",
+    "ts-node": "^10.9.2",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.71.1"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "2.273.0",
+    "constructs": "^10.8.1"
+  }
+}

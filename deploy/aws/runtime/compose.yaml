@@ -1,0 +1,105 @@
+# OpenWA single-session production runtime.
+#
+# Interpolated values come from ./.env, which install.sh and deploy.sh write from the SSM runtime
+# config parameter. The API key comes from ./.env.runtime, written at mode 0600 by deploy.sh from
+# Secrets Manager and never committed, logged or baked into an image.
+#
+# The hardening here mirrors the repository's own docker-compose.yml, which is the tested
+# configuration for this image.
+services:
+  openwa:
+    image: ${OPENWA_IMAGE_REF}
+    container_name: openwa
+    # Reaps the browser and helper children. The image's dumb-init entrypoint already does this; the
+    # flag is kept because the deployment must not depend on an image-internal detail.
+    init: true
+
+    # NOT `unless-stopped` or `always`. Those two make dockerd start this container itself when the
+    # daemon starts, which bypasses openwa.service entirely -- and with it the RequiresMountsFor
+    # ordering and the mountpoint guard that stop the container ever binding to an unmounted
+    # /opt/openwa/data. `on-failure` restarts a container that crashed, which is what the deployment
+    # actually needs, without making dockerd responsible for the boot path: openwa.service owns
+    # that, after the mount.
+    #
+    # The structural guarantee is not this line, though. bootstrap.sh gives docker.service a
+    # RequiresMountsFor drop-in for the data volume, so no container can start before the mount
+    # whatever its restart policy. This setting keeps the boot path going through one place.
+    restart: on-failure:5
+
+    # Bound to loopback only. Nothing outside the host can reach the API: the security group has no
+    # ingress rule, and even if one were added, the port is not published on a routable interface.
+    # Administration goes through SSM port forwarding.
+    ports:
+      - '127.0.0.1:${OPENWA_PORT}:2785'
+
+    # The single bind mount carrying every piece of load-bearing state: baileys/ and sessions/
+    # (WhatsApp authentication), main.sqlite (API keys and the audit log), openwa.sqlite, media/,
+    # plugins/, .api-key and .env.generated. It is a separate, retained, encrypted EBS volume.
+    volumes:
+      - ${OPENWA_DATA_DIR}:/app/data
+
+    env_file:
+      - .env.runtime
+
+    environment:
+      NODE_ENV: 'production'
+      PORT: '2785'
+      # Must be non-empty: the application resolves `process.env.ENGINE_TYPE || 'whatsapp-web.js'`,
+      # so a blank value silently selects the Chromium engine, which does not fit this instance.
+      ENGINE_TYPE: '${OPENWA_ENGINE_TYPE}'
+      SESSION_DATA_PATH: './data/sessions'
+      BAILEYS_AUTH_DIR: './data/baileys'
+      # Resume the authenticated session on boot rather than waiting for an operator.
+      AUTO_START_SESSIONS: 'true'
+      DATABASE_TYPE: 'sqlite'
+      DATABASE_NAME: './data/openwa.sqlite'
+      MAIN_DATABASE_NAME: './data/main.sqlite'
+      STORAGE_TYPE: 'local'
+      STORAGE_LOCAL_PATH: './data/media'
+      REDIS_ENABLED: 'false'
+      QUEUE_ENABLED: 'false'
+      CACHE_ENABLED: 'false'
+      # The dashboard is reached over plain HTTP through an SSM tunnel; left at its default the CSP
+      # upgrades those requests to HTTPS and the page renders blank.
+      CSP_UPGRADE_INSECURE_REQUESTS: 'false'
+      # Booleans are compared with an exact === 'true' / !== 'false', so every value above is a
+      # quoted lowercase string on purpose.
+
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    # The entrypoint starts as root to re-own /app/data, then drops to uid/gid 997 with gosu.
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - KILL
+      - SETGID
+      - SETUID
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: ${OPENWA_PIDS_LIMIT}
+    mem_limit: ${OPENWA_MEM_LIMIT}
+    # Sized to the application's bounded teardown.
+    stop_grace_period: 75s
+
+    # /api/health/ready probes both database connections. It proves the process serves traffic; it
+    # says nothing about whether WhatsApp is authenticated — healthcheck.sh reports that separately.
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -fsS http://localhost:2785/api/health/ready >/dev/null || exit 1']
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
+
+    # Ships stdout to CloudWatch. Docker's dual-logging cache keeps `docker logs` working over SSM,
+    # so this does not cost local debuggability.
+    logging:
+      driver: awslogs
+      options:
+        awslogs-region: '${OPENWA_REGION}'
+        awslogs-group: '${OPENWA_CONTAINER_LOG_GROUP}'
+        awslogs-stream: 'openwa'
+        awslogs-create-group: 'false'

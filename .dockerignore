@@ -72,3 +72,8 @@ temp/
 
 # Helm chart — deployment artifact, not a build input
 charts/
+
+# AWS CDK deployment - deployment artifact, not a build input (same reason as charts/ above).
+# The Dockerfile ends its builder stage with `COPY . .`, so without this the whole CDK project and
+# its node_modules would enter the build context and the layer cache.
+deploy/

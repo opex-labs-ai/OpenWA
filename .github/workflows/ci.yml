@@ -147,6 +147,12 @@ jobs:
       - name: Security audit (JavaScript SDK)
         run: cd sdk/javascript && npm audit --audit-level=high
 
+      # The AWS CDK deployment under deploy/aws is the fourth dependency tree. Its lockfile is
+      # committed, so the release-gate parity spec requires it to be audited here and in the weekly
+      # scan. Audited from the lockfile alone; the tree is not installed for this.
+      - name: Security audit (AWS CDK deployment)
+        run: cd deploy/aws && npm audit --audit-level=high
+
   test:
     name: Test
     runs-on: ubuntu-latest
@@ -406,6 +412,53 @@ jobs:
 
       - name: actionlint
         run: docker run --rm -v "$PWD:/repo:ro" -w /repo rhysd/actionlint:1.7.12 -color
+
+  # deploy/aws is a self-contained npm project, so the repo-root lint ({src,apps,libs,test}),
+  # typecheck (include: src, test) and jest (rootDir: src) globs do not reach it. Without this job
+  # a broken infrastructure change would merge cleanly and only fail at deploy time, against live
+  # AWS resources. Deliberately NOT in `build.needs`: it gates nothing the image depends on.
+  cdk:
+    name: AWS CDK deployment
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: deploy/aws/package-lock.json
+
+      - name: Install dependencies
+        working-directory: deploy/aws
+        run: npm ci
+
+      - name: Formatting
+        working-directory: deploy/aws
+        run: npm run format:check
+
+      - name: Lint
+        working-directory: deploy/aws
+        run: npm run lint
+
+      - name: TypeScript
+        working-directory: deploy/aws
+        run: npx tsc --noEmit
+
+      # Assertion suite: exactly one instance, encrypted volumes, the session volume retained on
+      # both delete and replace, IMDSv2 required, no ingress rule at all, no NAT gateway, and an
+      # OIDC trust policy that names only this repository.
+      - name: Unit tests
+        working-directory: deploy/aws
+        run: npm test
+
+      # Shell syntax, shellcheck, compose validation, and the guard that every placeholder in the
+      # user-data script is one the construct actually substitutes.
+      - name: Validate configuration and runtime bundle
+        working-directory: deploy/aws
+        run: bash scripts/validate-config.sh
 
   build:
     name: Build

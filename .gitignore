@@ -9,6 +9,8 @@ dist/
 build/
 .next/
 out/
+# AWS CDK synthesis output (deploy/aws)
+cdk.out/
 
 # Testing
 coverage/

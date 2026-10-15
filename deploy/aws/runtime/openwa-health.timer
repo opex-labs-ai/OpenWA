@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the OpenWA health probe every five minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

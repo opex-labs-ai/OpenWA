@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add optional 24-hour idempotency keys to twelve single-recipient send routes.
 - Add opt-in archive-only chat media with dashboard previews.
 - Report RSVPs to WhatsApp events as an `event.response` webhook and WebSocket event on Baileys (#1788, thanks @jelasus).
+- Add an AWS deployment under `deploy/aws`: a CDK v2 project for one EC2 instance running the published image under Docker, with the WhatsApp session on a separate encrypted EBS volume that is retained when the instance is replaced or the stack destroyed, Systems Manager as the only administrative path (no SSH, no inbound port), CloudWatch logs and six alarms, daily EBS snapshots, and GitHub OIDC deployment workflows that store no AWS keys. See [deploy/aws/README.md](deploy/aws/README.md).
 
 ### Changed
 

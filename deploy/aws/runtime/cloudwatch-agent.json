@@ -1,0 +1,56 @@
+{
+  "agent": {
+    "metrics_collection_interval": 60,
+    "run_as_user": "root"
+  },
+  "metrics": {
+    "namespace": "OpenWA/Host",
+    "append_dimensions": {
+      "InstanceId": "${aws:InstanceId}"
+    },
+    "_comment_aggregation": "The per-path rollup is what the data-volume alarm selects on; without it only the InstanceId rollup exists and the two filesystems would be averaged together.",
+    "aggregation_dimensions": [["InstanceId"], ["InstanceId", "path"]],
+    "metrics_collected": {
+      "mem": {
+        "measurement": [{ "name": "mem_used_percent", "unit": "Percent" }],
+        "metrics_collection_interval": 60
+      },
+      "swap": {
+        "measurement": [{ "name": "swap_used_percent", "unit": "Percent" }],
+        "metrics_collection_interval": 300
+      },
+      "disk": {
+        "measurement": [{ "name": "disk_used_percent", "unit": "Percent" }],
+        "resources": ["/", "@@DATA_DIR@@"],
+        "ignore_file_system_types": ["sysfs", "devtmpfs", "tmpfs", "overlay"],
+        "metrics_collection_interval": 300
+      }
+    }
+  },
+  "logs": {
+    "logs_collected": {
+      "files": {
+        "collect_list": [
+          {
+            "file_path": "/var/log/openwa-bootstrap.log",
+            "log_group_name": "@@SYSTEM_LOG_GROUP@@",
+            "log_stream_name": "{instance_id}/bootstrap",
+            "timezone": "UTC"
+          },
+          {
+            "file_path": "/var/log/openwa-deploy.log",
+            "log_group_name": "@@SYSTEM_LOG_GROUP@@",
+            "log_stream_name": "{instance_id}/deploy",
+            "timezone": "UTC"
+          },
+          {
+            "file_path": "/var/log/cloud-init-output.log",
+            "log_group_name": "@@SYSTEM_LOG_GROUP@@",
+            "log_stream_name": "{instance_id}/cloud-init",
+            "timezone": "UTC"
+          }
+        ]
+      }
+    }
+  }
+}

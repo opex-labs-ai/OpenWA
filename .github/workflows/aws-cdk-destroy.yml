@@ -1,0 +1,177 @@
+name: AWS CDK Destroy
+
+# Manual only. There is no push trigger and there never should be: this tears down the deployment.
+#
+# What it CANNOT destroy, by design:
+#   - the EBS session volume, which carries DeletionPolicy and UpdateReplacePolicy of Retain
+#   - its EBS snapshots
+#   - the Secrets Manager secret
+#   - the CloudWatch log groups
+#
+# Those four survive on purpose, so a destroy is recoverable and so WhatsApp authentication is never
+# lost to a mistaken run. Removing them is a separate, deliberate act documented in
+# deploy/aws/README.md. A guard below refuses to proceed if the retention policy has been weakened.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type the stack name exactly to confirm: OpenwaStack'
+        required: true
+        type: string
+      reason:
+        description: 'Why (recorded in the run log)'
+        required: true
+        type: string
+
+concurrency:
+  group: openwa-aws-infra
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  destroy:
+    name: Destroy the infrastructure, keeping the session volume
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # Requires the environment's reviewers to approve before anything runs.
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check the typed confirmation
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+          REASON: ${{ inputs.reason }}
+        run: |
+          set -euo pipefail
+          if [ "$CONFIRM" != 'OpenwaStack' ]; then
+            echo "Confirmation did not match. Expected exactly: OpenwaStack" >&2
+            echo "Got: ${CONFIRM}" >&2
+            exit 1
+          fi
+          echo "Confirmed. Reason given: ${REASON}"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: .nvmrc
+          cache: 'npm'
+          cache-dependency-path: deploy/aws/package-lock.json
+
+      - name: Install dependencies
+        working-directory: deploy/aws
+        run: npm ci
+
+      - name: Assume the deployment role
+        uses: aws-actions/configure-aws-credentials@00943011d9042930efac3dcd3a170e4273319bc8 # v5.1.0
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: openwa-cdk-destroy-${{ github.run_id }}
+          mask-aws-account-id: true
+
+      - name: Synthesize
+        working-directory: deploy/aws
+        env:
+          CDK_DEFAULT_ACCOUNT: ${{ vars.AWS_ACCOUNT_ID }}
+          CDK_DEFAULT_REGION: ${{ vars.AWS_REGION }}
+        run: npx cdk synth OpenwaStack --quiet
+
+      # The important gate. If someone has weakened the volume's retention, a destroy would delete
+      # the WhatsApp authentication state irrecoverably, so this refuses rather than asking.
+      - name: Refuse unless the session volume is retained
+        working-directory: deploy/aws
+        run: |
+          set -euo pipefail
+          node -e "
+            const fs = require('fs');
+            const template = JSON.parse(fs.readFileSync('cdk.out/OpenwaStack.template.json', 'utf8'));
+            const volumes = Object.entries(template.Resources)
+              .filter(([, r]) => r.Type === 'AWS::EC2::Volume');
+            if (volumes.length !== 1) {
+              console.error('Expected exactly one EBS volume, found ' + volumes.length);
+              process.exit(1);
+            }
+            const [logicalId, volume] = volumes[0];
+            const problems = [];
+            if (volume.DeletionPolicy !== 'Retain') {
+              problems.push('DeletionPolicy is ' + volume.DeletionPolicy + ', not Retain');
+            }
+            if (volume.UpdateReplacePolicy !== 'Retain') {
+              problems.push('UpdateReplacePolicy is ' + volume.UpdateReplacePolicy + ', not Retain');
+            }
+            if (problems.length) {
+              console.error('REFUSING TO DESTROY. The session volume (' + logicalId + ') would be deleted:');
+              for (const problem of problems) console.error('  - ' + problem);
+              console.error('Restore the Retain policies before destroying anything.');
+              process.exit(1);
+            }
+            console.log('Session volume ' + logicalId + ' is retained on both delete and replace. Safe to proceed.');
+          "
+
+      - name: List what will be removed, and what will survive
+        working-directory: deploy/aws
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+        run: |
+          set -euo pipefail
+          echo '================ RESOURCES THAT WILL BE REMOVED ================'
+          aws cloudformation describe-stack-resources --stack-name OpenwaStack \
+            --query "StackResources[?!contains(ResourceType, 'Volume')].[ResourceType,LogicalResourceId,PhysicalResourceId]" \
+            --output table || true
+
+          echo '================ RESOURCES THAT WILL SURVIVE =================='
+          aws cloudformation describe-stack-resources --stack-name OpenwaStack \
+            --query "StackResources[?ResourceType=='AWS::EC2::Volume'].[ResourceType,PhysicalResourceId]" \
+            --output table || true
+          echo 'Also retained: the Secrets Manager secret, both CloudWatch log groups, and every EBS snapshot.'
+
+          echo '================ THE DIFF ====================================='
+          npx cdk diff OpenwaStack || true
+
+      - name: Destroy
+        working-directory: deploy/aws
+        env:
+          CDK_DEFAULT_ACCOUNT: ${{ vars.AWS_ACCOUNT_ID }}
+          CDK_DEFAULT_REGION: ${{ vars.AWS_REGION }}
+        run: npx cdk destroy OpenwaStack --force
+
+      - name: Report what is left
+        if: always()
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          # The report runs on failure too, so that the session volume can be confirmed intact after
+          # an aborted run. But it must not then claim the stack was destroyed, which it did not.
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          if [ "$JOB_STATUS" = 'success' ]; then
+            echo 'The stack has been destroyed. The following were deliberately kept.'
+          else
+            echo "This run ended as ${JOB_STATUS}, so the stack was NOT destroyed: the typed"
+            echo 'confirmation, the volume retention guard, or cdk destroy itself did not complete.'
+            echo 'The session volume and snapshots are listed below so you can confirm they are intact.'
+          fi
+          echo '--- retained volumes ---'
+          aws ec2 describe-volumes \
+            --filters 'Name=tag:openwa:backup,Values=true' \
+            --query 'Volumes[].[VolumeId,State,Size,AvailabilityZone,Encrypted]' \
+            --output table || true
+          echo '--- retained snapshots ---'
+          aws ec2 describe-snapshots --owner-ids self \
+            --filters 'Name=tag:openwa:snapshot,Values=dlm-daily' \
+            --query 'reverse(sort_by(Snapshots, &StartTime))[:10].[SnapshotId,StartTime,VolumeSize]' \
+            --output table || true
+          cat <<'NOTE'
+
+          These still cost money while they exist: an unattached gp3 volume is billed per GiB-month,
+          as is snapshot storage. They hold WhatsApp authentication state, so deleting them means a
+          new QR scan. To bring the deployment back on the same session, follow "Recovery: attaching
+          an existing session volume" in deploy/aws/README.md. To remove them for good, delete the
+          volume and snapshots by hand, deliberately.
+          NOTE

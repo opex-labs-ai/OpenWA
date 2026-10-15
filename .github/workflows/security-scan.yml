@@ -73,6 +73,12 @@ jobs:
       - name: Security audit (JavaScript SDK)
         run: cd sdk/javascript && npm audit --audit-level=high
 
+      # The AWS CDK deployment tree, likewise from its lockfile alone. A weekly run matters here:
+      # this tree holds the deployment tooling, and an advisory in it would otherwise surface only
+      # when someone next touched deploy/aws.
+      - name: Security audit (AWS CDK deployment)
+        run: cd deploy/aws && npm audit --audit-level=high
+
   # Dependabot proposes refreshed node:22-slim digests, yet the pin has trailed the tag for weeks
   # (a refresh that is late or left unmerged), and a stale base ages silently: Node patch releases
   # and Debian fixes that the image scan below does not flag (medium/low, or not yet fixed upstream)
