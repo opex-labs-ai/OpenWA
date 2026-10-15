@@ -972,27 +972,27 @@ Each is a separate, deliberate command on purpose. There is no single switch tha
 Everything lives in the `context` block of `cdk.json`. An empty string means unset. Every value is
 validated at synth time, so `cdk synth` is the configuration checker.
 
-| Key                             | Default                                               | Notes                                                                           |
-| ------------------------------- | ----------------------------------------------------- | ------------------------------------------------------------------------------- |
-| `openwa:region`                 | `ap-south-1`                                          | Falls back to `CDK_DEFAULT_REGION`                                              |
-| `openwa:account`                | unset                                                 | Falls back to `CDK_DEFAULT_ACCOUNT`                                             |
-| `openwa:instanceType`           | `t3.small`                                            | `t3.medium` for `whatsapp-web.js`                                               |
-| `openwa:rootVolumeGib`          | `20`                                                  | Ephemeral; holds Docker images                                                  |
-| `openwa:dataVolumeGib`          | `20`                                                  | The retained session volume                                                     |
-| `openwa:imageRef`               | digest-pinned `0.24.0`                                | **Must** contain `@sha256:`                                                     |
-| `openwa:amiId`                  | pinned                                                | Refresh deliberately; see [step 7](#7-initial-cdk-deployment)                   |
-| `openwa:engineType`             | `baileys`                                             | or `whatsapp-web.js`, which needs a bigger instance                             |
-| `openwa:sessionId`              | `primary`                                             | Must match the session you create; the health probe uses it                     |
-| `openwa:logRetentionDays`       | `14`                                                  | Must be a value CloudWatch accepts                                              |
-| `openwa:backupRetentionCount`   | `7`                                                   | Daily snapshots kept                                                            |
-| `openwa:backupHourUtc`          | `3`                                                   | Snapshot hour, UTC                                                              |
-| `openwa:githubOwnerRepo`        | `opex-labs-ai/OpenWA`                                 | The only repository that may deploy                                             |
-| `openwa:githubDeployRefs`       | `["repo:opex-labs-ai/OpenWA:environment:production"]` | OIDC `sub` allow-list                                                           |
-| `openwa:githubOidcProviderArn`  | unset                                                 | Set to import an existing account provider                                      |
-| `openwa:alarmEmail`             | unset                                                 | Needs manual subscription confirmation                                          |
-| `openwa:backendSecurityGroupId` | unset                                                 | **The only way an ingress rule ever appears.** Opens 2785 from that group alone |
-| `openwa:peerVpcId` / `peerVpcCidr` / `peerRouteTableIds` | unset | Peer one same-region VPC and route both ways. Requires `backendSecurityGroupId` |
-| `openwa:privateDnsName`         | unset                                                 | Private hosted zone + A record for the instance, visible only in the two VPCs |
+| Key                                                      | Default                                               | Notes                                                                           |
+| -------------------------------------------------------- | ----------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `openwa:region`                                          | `ap-south-1`                                          | Falls back to `CDK_DEFAULT_REGION`                                              |
+| `openwa:account`                                         | unset                                                 | Falls back to `CDK_DEFAULT_ACCOUNT`                                             |
+| `openwa:instanceType`                                    | `t3.small`                                            | `t3.medium` for `whatsapp-web.js`                                               |
+| `openwa:rootVolumeGib`                                   | `20`                                                  | Ephemeral; holds Docker images                                                  |
+| `openwa:dataVolumeGib`                                   | `20`                                                  | The retained session volume                                                     |
+| `openwa:imageRef`                                        | digest-pinned `0.24.0`                                | **Must** contain `@sha256:`                                                     |
+| `openwa:amiId`                                           | pinned                                                | Refresh deliberately; see [step 7](#7-initial-cdk-deployment)                   |
+| `openwa:engineType`                                      | `baileys`                                             | or `whatsapp-web.js`, which needs a bigger instance                             |
+| `openwa:sessionId`                                       | `primary`                                             | Must match the session you create; the health probe uses it                     |
+| `openwa:logRetentionDays`                                | `14`                                                  | Must be a value CloudWatch accepts                                              |
+| `openwa:backupRetentionCount`                            | `7`                                                   | Daily snapshots kept                                                            |
+| `openwa:backupHourUtc`                                   | `3`                                                   | Snapshot hour, UTC                                                              |
+| `openwa:githubOwnerRepo`                                 | `opex-labs-ai/OpenWA`                                 | The only repository that may deploy                                             |
+| `openwa:githubDeployRefs`                                | `["repo:opex-labs-ai/OpenWA:environment:production"]` | OIDC `sub` allow-list                                                           |
+| `openwa:githubOidcProviderArn`                           | unset                                                 | Set to import an existing account provider                                      |
+| `openwa:alarmEmail`                                      | unset                                                 | Needs manual subscription confirmation                                          |
+| `openwa:backendSecurityGroupId`                          | unset                                                 | **The only way an ingress rule ever appears.** Opens 2785 from that group alone |
+| `openwa:peerVpcId` / `peerVpcCidr` / `peerRouteTableIds` | unset                                                 | Peer one same-region VPC and route both ways. Requires `backendSecurityGroupId` |
+| `openwa:privateDnsName`                                  | unset                                                 | Private hosted zone + A record for the instance, visible only in the two VPCs   |
 
 ### Reaching the API from an application backend
 
