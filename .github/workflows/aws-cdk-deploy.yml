@@ -1,0 +1,148 @@
+name: AWS CDK Deploy
+
+# Infrastructure deployment. Separate from application deployment (aws-app-deploy.yml) on purpose:
+# a failed application rollout must never be able to trigger infrastructure changes, and an
+# infrastructure change must never silently restart the container holding the WhatsApp session.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'deploy/aws/**'
+      - '.github/workflows/aws-cdk-deploy.yml'
+  workflow_dispatch:
+    inputs:
+      stack:
+        description: 'Stack to deploy (the bootstrap stack is deployed by hand, not here)'
+        required: false
+        default: 'OpenwaStack'
+        type: choice
+        options:
+          - OpenwaStack
+
+# Queue, never cancel: interrupting an in-flight CloudFormation update leaves the stack in
+# UPDATE_IN_PROGRESS and needs manual recovery.
+concurrency:
+  group: openwa-aws-infra
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CDK_DIR: deploy/aws
+
+jobs:
+  deploy:
+    name: Validate and deploy infrastructure
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # Gates the deploy behind whatever reviewers and protection rules the environment carries, and
+    # is what makes the OIDC subject `repo:<owner>/<repo>:environment:production`.
+    environment: production
+    permissions:
+      contents: read
+      # Minting the OIDC token is the only extra permission this needs. There are no long-lived AWS
+      # keys anywhere in this repository.
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: .nvmrc
+          cache: 'npm'
+          cache-dependency-path: ${{ env.CDK_DIR }}/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ${{ env.CDK_DIR }}
+        run: npm ci
+
+      # Everything below this point up to the credential step needs no AWS access, so a broken
+      # change fails before any token is minted.
+      - name: Formatting
+        working-directory: ${{ env.CDK_DIR }}
+        run: npm run format:check
+
+      - name: Lint
+        working-directory: ${{ env.CDK_DIR }}
+        run: npm run lint
+
+      - name: TypeScript
+        working-directory: ${{ env.CDK_DIR }}
+        run: npx tsc --noEmit
+
+      - name: Unit tests
+        working-directory: ${{ env.CDK_DIR }}
+        run: npm test
+
+      - name: Validate configuration and runtime bundle
+        working-directory: ${{ env.CDK_DIR }}
+        run: bash scripts/validate-config.sh
+
+      - name: Assume the deployment role
+        uses: aws-actions/configure-aws-credentials@00943011d9042930efac3dcd3a170e4273319bc8 # v5.1.0
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: openwa-cdk-deploy-${{ github.run_id }}
+          # Masked by the action; never echoed by any step here.
+          mask-aws-account-id: true
+
+      # Synthesis runs after the credentials step because, with no openwa:amiId pinned, resolving
+      # the latest Amazon Linux AMI is an AWS lookup. The unit tests synthesise offline against a
+      # pinned AMI, so a structural break is already caught above.
+      - name: CDK synth
+        working-directory: ${{ env.CDK_DIR }}
+        env:
+          CDK_DEFAULT_ACCOUNT: ${{ vars.AWS_ACCOUNT_ID }}
+          CDK_DEFAULT_REGION: ${{ vars.AWS_REGION }}
+        run: npx cdk synth ${{ inputs.stack || 'OpenwaStack' }}
+
+      # Printed so the job log records what was about to change, including whether the instance or
+      # the session volume would be replaced.
+      - name: CDK diff
+        working-directory: ${{ env.CDK_DIR }}
+        env:
+          CDK_DEFAULT_ACCOUNT: ${{ vars.AWS_ACCOUNT_ID }}
+          CDK_DEFAULT_REGION: ${{ vars.AWS_REGION }}
+        run: npx cdk diff ${{ inputs.stack || 'OpenwaStack' }}
+
+      - name: CDK deploy
+        working-directory: ${{ env.CDK_DIR }}
+        env:
+          CDK_DEFAULT_ACCOUNT: ${{ vars.AWS_ACCOUNT_ID }}
+          CDK_DEFAULT_REGION: ${{ vars.AWS_REGION }}
+        run: |
+          npx cdk deploy ${{ inputs.stack || 'OpenwaStack' }} \
+            --require-approval never \
+            --progress events
+
+      - name: Verify the deployment
+        working-directory: ${{ env.CDK_DIR }}
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          STACK_NAME: ${{ inputs.stack || 'OpenwaStack' }}
+        run: bash scripts/verify-deployment.sh
+
+      - name: Explain the failure
+        if: failure()
+        run: |
+          cat <<'NOTE'
+          The infrastructure deployment failed.
+
+          Nothing here deletes data: the session volume carries DeletionPolicy and
+          UpdateReplacePolicy of Retain, and this workflow never touches the volume or the
+          container's data directory.
+
+          Where to look, in order:
+            1. The "CDK diff" step above, for what was about to change.
+            2. CloudFormation events for the stack, in the AWS console or with
+               aws cloudformation describe-stack-events --stack-name OpenwaStack
+            3. The /openwa/OpenwaStack/system CloudWatch log group, which carries cloud-init,
+               bootstrap and deploy output from the instance.
+
+          If this is the very first deployment, confirm the one-time bootstrap is done:
+          cdk bootstrap, then cdk deploy OpenwaOidcStack, both with administrative credentials.
+          See deploy/aws/README.md.
+          NOTE

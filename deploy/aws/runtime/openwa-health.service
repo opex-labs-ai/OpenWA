@@ -1,0 +1,7 @@
+[Unit]
+Description=OpenWA health probe, publishing container/API/WhatsApp state to CloudWatch
+After=openwa.service
+
+[Service]
+Type=oneshot
+ExecStart=@@APP_DIR@@/healthcheck.sh

@@ -267,15 +267,38 @@ keeps in sync with the workflow (`src/common/docs-ci-jobs.spec.ts`). Restating t
 this section rot: it described a `dashboard` job with no formatting step and a `chart` job with no
 kubeconform long after both had one. What this page adds instead is the shape of the graph.
 
-Seven jobs run in parallel with no dependencies: `lint`, `audit`, `test`, `test-postgres`,
-`dashboard`, `scripts-smoke` and `chart`. `build` waits on all of them except `test-postgres`
+Eight jobs run in parallel with no dependencies: `lint`, `audit`, `test`, `test-postgres`,
+`dashboard`, `scripts-smoke`, `chart` and `cdk`. `build` waits on all of them except
+`test-postgres` and `cdk`
 (`needs: lint, audit, test, dashboard, scripts-smoke, chart`), and `docker` waits on `build` and
 `test-postgres`, so the image is only built from a tree that passed every gate including the real
 PostgreSQL run. `docker` pushes to `ghcr.io/<owner>/<repo>` on push events; fork pull requests build
 both architectures without publishing.
 
-Rollout is left to the operator — the repo has no SSH deploy step, no staging/production
-environments and no auto-deploy on merge.
+### Deployment
+
+Rollout of the container image itself is left to the operator: there is no SSH deploy step, and
+nothing in `ci.yml` deploys anywhere.
+
+One deployment target is maintained in-repo, under `deploy/aws`: a single-instance AWS deployment
+built with CDK v2, covering one EC2 instance running the published image under Docker, a separate
+encrypted EBS volume holding the WhatsApp session, Systems Manager as the only administrative
+path, CloudWatch logs and alarms, and daily snapshots. It has three workflows of its own:
+
+- `aws-cdk-deploy.yml` — infrastructure, on a push to `main` that touches `deploy/aws/**`, or on
+  manual dispatch. Authenticates with GitHub OIDC; no AWS keys are stored in this repository.
+- `aws-app-deploy.yml` — the runtime bundle and container restart, applied over Systems Manager
+  Run Command. Kept apart from infrastructure so a failed rollout cannot cascade.
+- `aws-cdk-destroy.yml` — manual only, gated on the `production` environment, and it refuses to
+  run if the session volume's retention policy has been weakened.
+
+Both deploy workflows require the `production` GitHub environment and the `AWS_REGION`,
+`AWS_ACCOUNT_ID` and `AWS_DEPLOY_ROLE_ARN` repository variables. Full setup, the first-time QR
+authentication procedure, the recovery runbooks and the cost breakdown are in
+[deploy/aws/README.md](../deploy/aws/README.md).
+
+That deployment is one supported option, not a requirement: the Docker Compose and Helm paths above
+remain first-class.
 
 `.github/workflows/security-scan.yml` (`name: Scheduled Security Scan`) complements the merge-time
 gates with a weekly run (Wednesdays 03:00 UTC, plus `workflow_dispatch`): it re-runs the `audit`

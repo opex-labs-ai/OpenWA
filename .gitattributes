@@ -8,3 +8,12 @@ Dockerfile* text eol=lf
 # Windows checkout (core.autocrlf=true) makes the PGDG key unreadable and the production stage's
 # `apt-get update` fails with NO_PUBKEY 7FCC7D46ACCC4CF8 / "repository is not signed".
 *.asc       text eol=lf
+
+# systemd units are parsed inside the Linux instance, and a CRLF unit file makes systemd reject the
+# directive it appears on. Same reason as *.sh above: without this, these are LF in the repository
+# only by the grace of the committer's core.autocrlf setting.
+*.service                           text eol=lf
+*.timer                             text eol=lf
+# The deployment compose file and CloudWatch agent config are read on the instance too.
+deploy/aws/runtime/compose.yaml     text eol=lf
+deploy/aws/runtime/*.json           text eol=lf

@@ -1,0 +1,30 @@
+{
+  "app": "npx ts-node --prefer-ts-exts bin/openwa.ts",
+  "watch": {
+    "include": ["**"],
+    "exclude": ["README.md", "cdk*.json", "**/*.d.ts", "**/*.js", "tsconfig.json", "package*.json", "node_modules"]
+  },
+  "context": {
+    "openwa:region": "ap-south-1",
+    "openwa:instanceType": "t3.small",
+    "openwa:rootVolumeGib": 20,
+    "openwa:dataVolumeGib": 20,
+    "openwa:imageRef": "ghcr.io/rmyndharis/openwa@sha256:5a2cb7a85e58f33967245dbda174de6aa8c0d0e36d0fced42fb9c6ef83e110d5",
+    "openwa:engineType": "baileys",
+    "_comment_optional": "The four keys below are optional. An empty string means unset. See README.",
+    "openwa:amiId": "",
+    "openwa:alarmEmail": "",
+    "openwa:backendSecurityGroupId": "",
+    "openwa:githubOidcProviderArn": "",
+    "openwa:sessionId": "primary",
+    "openwa:logRetentionDays": 14,
+    "openwa:backupRetentionCount": 7,
+    "openwa:backupHourUtc": 3,
+    "openwa:githubOwnerRepo": "opex-labs-ai/OpenWA",
+    "openwa:githubDeployRefs": ["repo:opex-labs-ai/OpenWA:environment:production"],
+    "@aws-cdk/aws-iam:minimizePolicies": true,
+    "@aws-cdk/core:checkSecretUsage": true,
+    "@aws-cdk/core:enablePartitionLiterals": true,
+    "@aws-cdk/aws-ec2:ebsDefaultGp3Volume": true
+  }
+}

@@ -1,0 +1,16 @@
+# CDK synthesis output
+cdk.out/
+# Resolved context lookups are committed on purpose (see README: AMI pinning), so cdk.context.json
+# is NOT ignored here.
+dist/
+*.d.ts
+*.js
+!jest.config.js
+
+# Resolved context lookups embed the AWS account id, so they are not committed. Pin the AMI
+# explicitly with openwa:amiId in cdk.json instead (see README).
+cdk.context.json
+
+# Written on the instance by deploy.sh from Secrets Manager; must never exist in the tree.
+runtime/.env
+runtime/.env.runtime
