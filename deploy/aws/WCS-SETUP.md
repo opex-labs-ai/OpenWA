@@ -21,14 +21,14 @@ Account `059311035457`, region `ap-south-1`. Written 2026-10-15.
 
 ## Status
 
-| Step                                                         | State                        |
-| ------------------------------------------------------------ | ---------------------------- |
-| `production` environment and its three variables             | done                         |
-| `OpenwaOidcStack` (deploy role, existing OIDC provider)      | deployed by hand, 2026-10-15 |
-| PR #1 merged                                                 | done, 2026-10-15 13:24 UTC   |
-| AWS CDK Deploy on merge                                      | **failed: role assumption**  |
-| `OpenwaStack` (instance, volume, peering, `openwa.internal`) | not created                  |
-| WhatsApp linked, persistence proven, WCS key issued          | not started                  |
+| Step                                                         | State                                                              |
+| ------------------------------------------------------------ | ------------------------------------------------------------------ |
+| `production` environment and its three variables             | done                                                               |
+| `OpenwaOidcStack` (deploy role, existing OIDC provider)      | deployed by hand, 2026-10-15; redeployed with both subject formats |
+| PR #1 merged                                                 | done, 2026-10-15 13:24 UTC                                         |
+| AWS CDK Deploy on merge                                      | **failed: role assumption**                                        |
+| `OpenwaStack` (instance, volume, peering, `openwa.internal`) | not created                                                        |
+| WhatsApp linked, persistence proven, WCS key issued          | not started                                                        |
 
 **Why the deploy failed.** This repository uses GitHub's immutable OIDC subject format
 (`gh api repos/opex-labs-ai/OpenWA/actions/oidc/customization/sub`), so the token's `sub` is
@@ -115,9 +115,10 @@ instance can act as the linked WhatsApp account; treat that permission according
 
 ## Next steps
 
-1. **Redeploy `OpenwaOidcStack` by hand, before merging this PR**, from this branch with admin
-   credentials, so the role trusts the immutable subject:
-   `cd deploy/aws && npx cdk deploy OpenwaOidcStack`. Merging first just repeats the failed deploy.
+1. ~~**Redeploy `OpenwaOidcStack` by hand, before merging this PR.**~~ Done 2026-10-15: the role
+   now trusts both `repo:opex-labs-ai@312106196/OpenWA@1420229262:environment:production` and
+   `repo:opex-labs-ai/OpenWA:environment:production`. Repeat it by hand
+   (`cd deploy/aws && npx cdk deploy OpenwaOidcStack`) whenever `githubDeployRefs` changes.
 2. **Merge this PR.** The merge runs AWS CDK Deploy, which creates `OpenwaStack`; AWS App Deploy
    follows. Check the `OpenwaStack` outputs (`InstanceId`, `PrivateApiUrl`, `PeeringConnectionId`).
 3. **Link WhatsApp.** Follow README §8: open the SSM tunnel, read the admin key, create and start
