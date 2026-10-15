@@ -447,6 +447,27 @@ describe('OpenwaOidcStack: GitHub trust', () => {
     });
   });
 
+  it('accepts the immutable subject format for this repository only', () => {
+    const immutable = 'repo:opex-labs-ai@312106196/OpenWA@1420229262:environment:production';
+    oidcStack({ 'openwa:githubDeployRefs': [immutable] }).hasResourceProperties('AWS::IAM::Role', {
+      AssumeRolePolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Condition: Match.objectLike({
+              StringLike: { 'token.actions.githubusercontent.com:sub': [immutable] },
+            }),
+          }),
+        ]),
+      }),
+    });
+    expect(() => oidcStack({ 'openwa:githubDeployRefs': ['repo:attacker@1/OpenWA@2:environment:production'] })).toThrow(
+      /another repository/,
+    );
+    expect(() =>
+      oidcStack({ 'openwa:githubDeployRefs': ['repo:opex-labs-ai@*/OpenWA@*:environment:production'] }),
+    ).toThrow(/another repository/);
+  });
+
   it('refuses a deploy ref belonging to another repository', () => {
     expect(() => oidcStack({ 'openwa:githubDeployRefs': ['repo:attacker/evil:environment:production'] })).toThrow(
       /must start with "repo:opex-labs-ai\/OpenWA:"/,

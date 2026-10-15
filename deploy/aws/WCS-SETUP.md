@@ -13,8 +13,32 @@ Account `059311035457`, region `ap-south-1`. Written 2026-10-15.
   **`http://openwa.internal:2785`**. The name and port exist only inside the two VPCs; nothing is
   exposed to the internet.
 - Deploys run from GitHub Actions through OIDC. No AWS keys are stored in GitHub.
+- **`OpenwaStack` is not deployed yet.** The first deploy after #1 merged (run 38742440851) failed
+  at role assumption; see [Status](#status). Nothing in `OpenwaStack` exists in AWS until the fix
+  in this PR is applied.
 - **The WhatsApp QR scan has not been done yet.** Until it is, the API answers but cannot send
   messages.
+
+## Status
+
+| Step                                                         | State                        |
+| ------------------------------------------------------------ | ---------------------------- |
+| `production` environment and its three variables             | done                         |
+| `OpenwaOidcStack` (deploy role, existing OIDC provider)      | deployed by hand, 2026-10-15 |
+| PR #1 merged                                                 | done, 2026-10-15 13:24 UTC   |
+| AWS CDK Deploy on merge                                      | **failed: role assumption**  |
+| `OpenwaStack` (instance, volume, peering, `openwa.internal`) | not created                  |
+| WhatsApp linked, persistence proven, WCS key issued          | not started                  |
+
+**Why the deploy failed.** This repository uses GitHub's immutable OIDC subject format
+(`gh api repos/opex-labs-ai/OpenWA/actions/oidc/customization/sub`), so the token's `sub` is
+`repo:opex-labs-ai@312106196/OpenWA@1420229262:environment:production`. The role trusted only
+`repo:opex-labs-ai/OpenWA:environment:production`. This PR adds the immutable form to
+`openwa:githubDeployRefs`. The role's trust policy lives in `OpenwaOidcStack`, which GitHub cannot
+deploy, so it has to be redeployed by hand (next steps).
+
+**Also fixed in this PR.** Compose published 2785 on `127.0.0.1` only, so WCS's traffic would have
+reached the instance and been refused. See [Port binding](#network-path-from-wcs).
 
 ## Network path from WCS
 
@@ -77,7 +101,7 @@ The first-boot admin key is in Secrets Manager at `OpenwaStack/api-master-key` (
 | Environment variables | `AWS_REGION=ap-south-1`, `AWS_ACCOUNT_ID=059311035457`, `AWS_DEPLOY_ROLE_ARN` |
 | Repository secrets    | none                                                                          |
 | Deploy role           | `arn:aws:iam::059311035457:role/openwa-github-deploy` (`OpenwaOidcStack`)     |
-| Who can assume it     | `repo:opex-labs-ai/OpenWA:environment:production` only                        |
+| Who can assume it     | `production` environment of this repository only (both subject formats)       |
 | OIDC provider         | the account's existing `token.actions.githubusercontent.com`, imported        |
 | CDK bootstrap         | existing `CDKToolkit` in ap-south-1, qualifier `hnb659fds`                    |
 
@@ -91,27 +115,30 @@ instance can act as the linked WhatsApp account; treat that permission according
 
 ## Next steps
 
-1. **Confirm the first deploy finished.** Check the AWS CDK Deploy and AWS App Deploy runs on `main`
-   and the `OpenwaStack` outputs (`InstanceId`, `PrivateApiUrl`, `PeeringConnectionId`).
-2. **Link WhatsApp.** Follow README §8: open the SSM tunnel, read the admin key, create and start
+1. **Redeploy `OpenwaOidcStack` by hand, before merging this PR**, from this branch with admin
+   credentials, so the role trusts the immutable subject:
+   `cd deploy/aws && npx cdk deploy OpenwaOidcStack`. Merging first just repeats the failed deploy.
+2. **Merge this PR.** The merge runs AWS CDK Deploy, which creates `OpenwaStack`; AWS App Deploy
+   follows. Check the `OpenwaStack` outputs (`InstanceId`, `PrivateApiUrl`, `PeeringConnectionId`).
+3. **Link WhatsApp.** Follow README §8: open the SSM tunnel, read the admin key, create and start
    session `primary`, scan the QR code from the phone that owns the number.
-3. **Prove persistence.** Reboot the instance and confirm the session comes back `ready` without a
+4. **Prove persistence.** Reboot the instance and confirm the session comes back `ready` without a
    new QR code (README §8 step 6). Until this passes, persistence is designed-for but unproven.
-4. **Create the WCS API key** (above) and add it to WCS's configuration, with base URL
+5. **Create the WCS API key** (above) and add it to WCS's configuration, with base URL
    `http://openwa.internal:2785`.
-5. **Test from WCS.** From the WcsBackend instance:
+6. **Test from WCS.** From the WcsBackend instance:
    `curl -fsS http://openwa.internal:2785/api/health/ready`. If the name does not resolve, check
    the hosted zone's VPC associations; if it times out, check the peering routes and the ingress rule.
-6. **Point OpenWA's webhooks at WCS** if WCS needs inbound events. WCS's existing webhook
+7. **Point OpenWA's webhooks at WCS** if WCS needs inbound events. WCS's existing webhook
    (`https://wcs.whatsappify.ai/webhooks/meta`) is for Meta's API; OpenWA events need their own
    endpoint and payload handling.
-7. **Set an alarm email** (`openwa:alarmEmail` in `cdk.json`). Without it, the six alarms fire into
+8. **Set an alarm email** (`openwa:alarmEmail` in `cdk.json`). Without it, the six alarms fire into
    an SNS topic nobody is subscribed to.
-8. **Add a required reviewer** to the `production` environment, so a merge to `main` cannot deploy
+9. **Add a required reviewer** to the `production` environment, so a merge to `main` cannot deploy
    without approval.
-9. **Refresh the pinned AMI** deliberately from time to time (comment in `cdk.json`), and expect an
-   instance replacement when you do. Have the README §14 runbook to hand, because replacement can
-   need the manual volume reattach.
+10. **Refresh the pinned AMI** deliberately from time to time (comment in `cdk.json`), and expect an
+    instance replacement when you do. Have the README §14 runbook to hand, because replacement can
+    need the manual volume reattach.
 
 ## Known limitations
 

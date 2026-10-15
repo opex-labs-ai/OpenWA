@@ -147,11 +147,17 @@ export function resolveConfig(app: App): OpenwaConfig {
   if (!Array.isArray(refs) || refs.length === 0) {
     throw new ConfigError('githubDeployRefs must be a non-empty array of OIDC subject patterns');
   }
+  // Repositories using GitHub's immutable OIDC subject format get `repo:<owner>@<id>/<repo>@<id>:`
+  // instead of `repo:<owner>/<repo>:`. The numeric ids are what make it immutable, so they are
+  // required rather than wildcarded.
+  const [owner, repo] = githubOwnerRepo.split('/');
+  const escape = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const immutablePrefix = new RegExp(`^repo:${escape(owner)}@\\d+/${escape(repo)}@\\d+:`);
   const githubDeployRefs = refs.map(ref => {
-    if (typeof ref !== 'string' || !ref.startsWith(`repo:${githubOwnerRepo}:`)) {
+    if (typeof ref !== 'string' || !(ref.startsWith(`repo:${githubOwnerRepo}:`) || immutablePrefix.test(ref))) {
       throw new ConfigError(
-        `githubDeployRefs entry ${JSON.stringify(ref)} must start with "repo:${githubOwnerRepo}:" so the ` +
-          'trust policy cannot be satisfied by another repository',
+        `githubDeployRefs entry ${JSON.stringify(ref)} must start with "repo:${githubOwnerRepo}:" or ` +
+          `"repo:${owner}@<id>/${repo}@<id>:" so the trust policy cannot be satisfied by another repository`,
       );
     }
     return ref;
