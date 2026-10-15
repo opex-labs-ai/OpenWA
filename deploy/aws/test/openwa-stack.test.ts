@@ -294,6 +294,13 @@ describe('OpenwaStack: private access from a peer VPC', () => {
     }
   });
 
+  it('binds beyond loopback only when a backend security group is configured', () => {
+    const runtimeConfig = (template: Template): string =>
+      JSON.stringify(Object.values(template.findResources('AWS::SSM::Parameter')).map(p => p.Properties?.Value));
+    expect(runtimeConfig(appStack())).toContain('OPENWA_BIND_ADDRESS=127.0.0.1');
+    expect(runtimeConfig(appStack(PEER))).toContain('OPENWA_BIND_ADDRESS=0.0.0.0');
+  });
+
   it('rejects an incomplete or conflicting peer configuration', () => {
     expect(() => appStack({ ...PEER, 'openwa:backendSecurityGroupId': '' })).toThrow(/backendSecurityGroupId/);
     expect(() => appStack({ ...PEER, 'openwa:peerRouteTableIds': [] })).toThrow(/peerRouteTableIds/);
@@ -440,6 +447,27 @@ describe('OpenwaOidcStack: GitHub trust', () => {
     });
   });
 
+  it('accepts the immutable subject format for this repository only', () => {
+    const immutable = 'repo:opex-labs-ai@312106196/OpenWA@1420229262:environment:production';
+    oidcStack({ 'openwa:githubDeployRefs': [immutable] }).hasResourceProperties('AWS::IAM::Role', {
+      AssumeRolePolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Condition: Match.objectLike({
+              StringLike: { 'token.actions.githubusercontent.com:sub': [immutable] },
+            }),
+          }),
+        ]),
+      }),
+    });
+    expect(() => oidcStack({ 'openwa:githubDeployRefs': ['repo:attacker@1/OpenWA@2:environment:production'] })).toThrow(
+      /another repository/,
+    );
+    expect(() =>
+      oidcStack({ 'openwa:githubDeployRefs': ['repo:opex-labs-ai@*/OpenWA@*:environment:production'] }),
+    ).toThrow(/another repository/);
+  });
+
   it('refuses a deploy ref belonging to another repository', () => {
     expect(() => oidcStack({ 'openwa:githubDeployRefs': ['repo:attacker/evil:environment:production'] })).toThrow(
       /must start with "repo:opex-labs-ai\/OpenWA:"/,
@@ -509,9 +537,9 @@ describe('runtime bundle', () => {
   const runtime = path.join(__dirname, '..', 'runtime');
   const read = (file: string): string => fs.readFileSync(path.join(runtime, file), 'utf8');
 
-  it('publishes the API port on loopback only', () => {
+  it('publishes the API port on loopback unless the stack opens it to a backend', () => {
     const compose = read('compose.yaml');
-    expect(compose).toContain("'127.0.0.1:${OPENWA_PORT}:2785'");
+    expect(compose).toContain("'${OPENWA_BIND_ADDRESS:-127.0.0.1}:${OPENWA_PORT}:2785'");
     expect(compose).not.toMatch(/['"]0\.0\.0\.0:\d+:\d+['"]/);
     // A bare "port:port" mapping publishes on every interface.
     expect(compose).not.toMatch(/^\s*-\s*['"]?\d+:2785['"]?\s*$/m);

@@ -26,11 +26,12 @@ services:
     # whatever its restart policy. This setting keeps the boot path going through one place.
     restart: on-failure:5
 
-    # Bound to loopback only. Nothing outside the host can reach the API: the security group has no
-    # ingress rule, and even if one were added, the port is not published on a routable interface.
-    # Administration goes through SSM port forwarding.
+    # Loopback by default: nothing outside the host can reach the API, and administration goes
+    # through SSM port forwarding. deploy.sh sets OPENWA_BIND_ADDRESS=0.0.0.0 only when the stack
+    # opens 2785 to a backend security group. EC2 public IPs are NAT'd to the private address and
+    # never sit on the interface, so the security group stays the only gate either way.
     ports:
-      - '127.0.0.1:${OPENWA_PORT}:2785'
+      - '${OPENWA_BIND_ADDRESS:-127.0.0.1}:${OPENWA_PORT}:2785'
 
     # The single bind mount carrying every piece of load-bearing state: baileys/ and sessions/
     # (WhatsApp authentication), main.sqlite (API keys and the audit log), openwa.sqlite, media/,

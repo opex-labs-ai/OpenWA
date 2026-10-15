@@ -71,8 +71,8 @@ check 'placeholder tokens are all known' node -e "
 step 'the compose file is well formed and publishes no public port'
 check 'compose.yaml parses' node -e "
   const text = require('fs').readFileSync('runtime/compose.yaml', 'utf8');
-  if (!text.includes(\"'127.0.0.1:\\\${OPENWA_PORT}:2785'\")) {
-    console.error('the API port must be published on loopback only');
+  if (!text.includes(\"'\\\${OPENWA_BIND_ADDRESS:-127.0.0.1}:\\\${OPENWA_PORT}:2785'\")) {
+    console.error('the API port must be published on OPENWA_BIND_ADDRESS, defaulting to loopback');
     process.exit(1);
   }
   if (/['\\\"]0\\.0\\.0\\.0:/.test(text)) {
@@ -92,7 +92,7 @@ if command -v docker >/dev/null 2>&1; then
   # Interpolation needs the variables the instance would supply; values are irrelevant to validation.
   check 'docker compose config' env \
     OPENWA_IMAGE_REF='example@sha256:0000000000000000000000000000000000000000000000000000000000000000' \
-    OPENWA_ENGINE_TYPE=baileys OPENWA_PORT=2785 OPENWA_DATA_DIR=/opt/openwa/data \
+    OPENWA_ENGINE_TYPE=baileys OPENWA_PORT=2785 OPENWA_BIND_ADDRESS=127.0.0.1 OPENWA_DATA_DIR=/opt/openwa/data \
     OPENWA_MEM_LIMIT=1400m OPENWA_PIDS_LIMIT=2048 OPENWA_REGION=ap-south-1 \
     OPENWA_CONTAINER_LOG_GROUP=/openwa/test/container \
     docker compose --file "$COMPOSE_TMP/compose.yaml" config --quiet

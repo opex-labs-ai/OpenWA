@@ -27,7 +27,11 @@
     "openwa:backupRetentionCount": 7,
     "openwa:backupHourUtc": 3,
     "openwa:githubOwnerRepo": "opex-labs-ai/OpenWA",
-    "openwa:githubDeployRefs": ["repo:opex-labs-ai/OpenWA:environment:production"],
+    "_comment_githubDeployRefs": "This repository uses GitHub's immutable OIDC subject format (gh api repos/opex-labs-ai/OpenWA/actions/oidc/customization/sub), so the token's sub is repo:<owner>@<id>/<repo>@<id>:... The plain form is kept in case the repository setting is ever switched back.",
+    "openwa:githubDeployRefs": [
+      "repo:opex-labs-ai@312106196/OpenWA@1420229262:environment:production",
+      "repo:opex-labs-ai/OpenWA:environment:production"
+    ],
     "@aws-cdk/aws-iam:minimizePolicies": true,
     "@aws-cdk/core:checkSecretUsage": true,
     "@aws-cdk/core:enablePartitionLiterals": true,
