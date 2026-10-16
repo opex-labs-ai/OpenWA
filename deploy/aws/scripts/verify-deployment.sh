@@ -114,12 +114,14 @@ PROBE="READY_TIMEOUT=${READY_TIMEOUT}
 ${PROBE}"
 
 printf 'waiting up to %ss for the container and API to become ready\n' "$READY_TIMEOUT"
+# --parameters must be a whole JSON object. The `commands=<json>` shorthand keeps the newlines
+# escaped, so the instance receives the probe as a single line and bash rejects it.
 COMMAND_ID="$(aws ssm send-command --region "$REGION" \
   --instance-ids "$INSTANCE_ID" \
   --document-name AWS-RunShellScript \
   --comment 'openwa verify-deployment (read-only)' \
   --timeout-seconds 900 \
-  --parameters "commands=$(printf '%s' "$PROBE" | python3 -c 'import json,sys; print(json.dumps([sys.stdin.read()]))')" \
+  --parameters "$(printf '%s' "$PROBE" | python3 -c 'import json,sys; print(json.dumps({"commands": [sys.stdin.read()]}))')" \
   --query 'Command.CommandId' --output text)"
 
 # Long enough to outlast the in-instance wait above plus delivery.
