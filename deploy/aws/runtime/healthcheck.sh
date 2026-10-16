@@ -26,11 +26,22 @@ PORT="${OPENWA_PORT:-2785}"
 SESSION_ID="${OPENWA_SESSION_ID:-primary}"
 BASE="http://127.0.0.1:${PORT}"
 
-INSTANCE_ID="$(curl -fsS -m 2 -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' \
-  -X PUT http://169.254.169.254/latest/api/token 2>/dev/null |
-  { read -r token && curl -fsS -m 2 -H "X-aws-ec2-metadata-token: ${token}" \
-    http://169.254.169.254/latest/meta-data/instance-id 2>/dev/null; })"
+# Two plain steps rather than a pipeline into `read`. The IMDSv2 token comes back with no trailing
+# newline, so `read -r token` hit EOF and returned non-zero even though it had set the variable; the
+# `&&` then skipped the second call and every metric was published with InstanceId=unknown. The
+# alarms are dimensioned on the real instance id, so they saw no data at all and — treating missing
+# data as breaching, by design — sat in ALARM permanently while the service was perfectly healthy.
+IMDS_TOKEN="$(curl -fsS -m 2 -X PUT \
+  -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' \
+  http://169.254.169.254/latest/api/token 2>/dev/null || true)"
+INSTANCE_ID="$(curl -fsS -m 2 \
+  -H "X-aws-ec2-metadata-token: ${IMDS_TOKEN}" \
+  http://169.254.169.254/latest/meta-data/instance-id 2>/dev/null || true)"
 INSTANCE_ID="${INSTANCE_ID:-unknown}"
+if [ "$INSTANCE_ID" = 'unknown' ]; then
+  # Worth shouting about: metrics published under this dimension reach no alarm.
+  printf '[openwa-health] %s WARNING could not read the instance id from IMDS; metrics will not match the alarms\n' "$(date -Is)"
+fi
 
 log() { printf '[openwa-health] %s %s\n' "$(date -Is)" "$*"; }
 

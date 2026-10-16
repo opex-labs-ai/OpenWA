@@ -45,6 +45,17 @@ export interface OpenwaConfig {
    */
   readonly backendSecurityGroupId?: string;
   /**
+   * Opens port 2785 to one CIDR on the public internet, for an operator who wants the dashboard in
+   * a browser without an SSM tunnel.
+   *
+   * Understand the trade before setting it. The API speaks plain HTTP, so the API key crosses the
+   * internet in cleartext on every request, and that key can send WhatsApp messages as the linked
+   * account. A home IP also changes, so the rule silently stops working. The SSM port-forwarding
+   * tunnel gives the same browser access with no exposure and no cost, and is the better answer
+   * unless something genuinely cannot tunnel.
+   */
+  readonly adminCidr?: string;
+  /**
    * Private path from another VPC in the same account and region. When set, the two VPCs are peered,
    * each side gets a route to the other, and backendSecurityGroupId must name the caller's group.
    */
@@ -178,6 +189,26 @@ export function resolveConfig(app: App): OpenwaConfig {
     throw new ConfigError(`backendSecurityGroupId "${backendSecurityGroupId}" is not a security group id`);
   }
 
+  const adminCidr = optionalString(app, 'adminCidr');
+  if (adminCidr !== undefined) {
+    const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d{1,2})$/.exec(adminCidr);
+    if (!match) {
+      throw new ConfigError(`adminCidr "${adminCidr}" is not an IPv4 CIDR such as "203.0.113.4/32"`);
+    }
+    const octets = match.slice(1, 5).map(Number);
+    const prefix = Number(match[5]);
+    if (octets.some(o => o > 255) || prefix > 32) {
+      throw new ConfigError(`adminCidr "${adminCidr}" is not a valid IPv4 CIDR`);
+    }
+    if (prefix === 0) {
+      throw new ConfigError(
+        'adminCidr must not be 0.0.0.0/0. That publishes an unencrypted, WhatsApp-sending API to ' +
+          'the entire internet behind a single header, which no deployment of this shape should do. ' +
+          'Use a /32, or put an HTTPS load balancer in front if the API genuinely needs to be public.',
+      );
+    }
+  }
+
   const peerVpcId = optionalString(app, 'peerVpcId');
   const peerVpcCidr = optionalString(app, 'peerVpcCidr');
   const rawRouteTables = raw(app, 'peerRouteTableIds') ?? [];
@@ -236,6 +267,7 @@ export function resolveConfig(app: App): OpenwaConfig {
     githubOidcProviderArn: optionalString(app, 'githubOidcProviderArn'),
     alarmEmail,
     backendSecurityGroupId,
+    adminCidr,
     peer,
     privateDnsName,
   };
