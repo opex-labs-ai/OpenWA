@@ -8,7 +8,6 @@
     "append_dimensions": {
       "InstanceId": "${aws:InstanceId}"
     },
-    "_comment_aggregation": "The per-path rollup is what the data-volume alarm selects on; without it only the InstanceId rollup exists and the two filesystems would be averaged together.",
     "aggregation_dimensions": [["InstanceId"], ["InstanceId", "path"]],
     "metrics_collected": {
       "mem": {

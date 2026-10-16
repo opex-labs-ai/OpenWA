@@ -648,6 +648,30 @@ describe('runtime bundle', () => {
   });
 });
 
+describe('instance-side inputs that fail only at boot', () => {
+  it('keeps the CloudWatch agent config free of keys the agent schema rejects', () => {
+    // The agent refuses unknown properties, which aborts install.sh and leaves no container running.
+    const keys: string[] = [];
+    const walk = (node: unknown): void => {
+      if (Array.isArray(node)) node.forEach(walk);
+      else if (node && typeof node === 'object') {
+        for (const [key, value] of Object.entries(node)) {
+          keys.push(key);
+          walk(value);
+        }
+      }
+    };
+    walk(JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'runtime', 'cloudwatch-agent.json'), 'utf8')));
+    expect(keys.filter(key => key.startsWith('_'))).toEqual([]);
+  });
+
+  it('sends the verify probe as a JSON parameters object, not the commands= shorthand', () => {
+    const verify = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'verify-deployment.sh'), 'utf8');
+    expect(verify).toContain('json.dumps({"commands": [sys.stdin.read()]})');
+    expect(verify).not.toMatch(/--parameters "commands=\$\(/);
+  });
+});
+
 describe('committed configuration', () => {
   const cdkJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'cdk.json'), 'utf8')) as {
     context: Record<string, unknown>;
