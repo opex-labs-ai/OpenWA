@@ -670,6 +670,67 @@ describe('instance-side inputs that fail only at boot', () => {
     expect(verify).toContain('json.dumps({"commands": [sys.stdin.read()]})');
     expect(verify).not.toMatch(/--parameters "commands=\$\(/);
   });
+
+  it('reports every probe field on a single line', () => {
+    // `docker inspect` on a missing container writes a blank line to stdout and then fails, so an
+    // unguarded `|| echo absent` split the field across two lines and the parser read it as empty —
+    // producing "the container is , not running".
+    const verify = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'verify-deployment.sh'), 'utf8');
+    expect(verify).toContain('field_or()');
+    // Code only: the comment above field_or quotes the old pattern on purpose.
+    const code = verify
+      .split('\n')
+      .filter(line => !line.trimStart().startsWith('#'))
+      .join('\n');
+    expect(code).not.toMatch(/docker inspect[^\n]*\|\| echo (absent|none|0)\)/);
+  });
+
+  it('does not let a CloudWatch agent failure abort the deployment', () => {
+    // The agent is observability; the container is the service. A rejected agent config used to
+    // abort install.sh under `set -e` before the container, the health timer or log shipping had
+    // started, which is how one unknown JSON key took the whole deployment down.
+    const install = fs.readFileSync(path.join(__dirname, '..', 'runtime', 'install.sh'), 'utf8');
+    expect(install).toContain('agent_ok');
+    expect(install).toMatch(/Metrics and log shipping are DEGRADED/);
+    // The ctl invocation must be inside a conditional, never a bare statement under errexit.
+    expect(install).not.toMatch(/^\/opt\/aws\/amazon-cloudwatch-agent\/bin\/amazon-cloudwatch-agent-ctl/m);
+  });
+});
+
+describe('the deploy workflow applies what it publishes', () => {
+  const workflow = (name: string): string =>
+    fs.readFileSync(path.join(__dirname, '..', '..', '..', '.github', 'workflows', name), 'utf8');
+
+  it('applies the runtime bundle before verifying it', () => {
+    // `cdk deploy` publishes the bundle and the SSM pointer, but nothing on the instance re-reads
+    // that pointer by itself — user data runs once, at first boot. Verifying without applying
+    // reports the OLD bundle as a successful deployment of the new one, and a first boot that
+    // failed could never be repaired by a later deploy.
+    const deploy = workflow('aws-cdk-deploy.yml');
+    const apply = deploy.indexOf('apply-runtime-bundle.sh');
+    const verify = deploy.indexOf('verify-deployment.sh');
+    expect(apply).toBeGreaterThan(0);
+    expect(verify).toBeGreaterThan(0);
+    expect(apply).toBeLessThan(verify);
+  });
+
+  it('shares one apply script between the two workflows so they cannot drift', () => {
+    expect(fs.existsSync(path.join(__dirname, '..', 'scripts', 'apply-runtime-bundle.sh'))).toBe(true);
+    expect(workflow('aws-app-deploy.yml')).toContain('apply-runtime-bundle.sh');
+  });
+
+  it('does not chain app deploy off the deploy workflow', () => {
+    // Chaining on CDK Deploy's success deadlocked: a failed first boot meant no container, so
+    // verification failed, so CDK Deploy failed, so the chained rollout never ran, so the fix was
+    // never applied. CDK Deploy now applies the bundle itself; this stays a manual tool.
+    expect(workflow('aws-app-deploy.yml')).not.toContain('workflow_run');
+  });
+
+  it('waits for cloud-init before applying, so two rollouts cannot race', () => {
+    const apply = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'apply-runtime-bundle.sh'), 'utf8');
+    expect(apply).toContain('cloud-init status');
+    expect(apply).toContain('/usr/local/bin/openwa-refresh');
+  });
 });
 
 describe('committed configuration', () => {
