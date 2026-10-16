@@ -206,6 +206,25 @@ describe('OpenwaStack: network exposure', () => {
     }
   });
 
+  it('opens the port to one public CIDR only when adminCidr is set', () => {
+    const template = appStack({ 'openwa:adminCidr': '203.0.113.4/32' });
+    template.hasResourceProperties('AWS::EC2::SecurityGroup', {
+      SecurityGroupIngress: Match.arrayWith([
+        Match.objectLike({ CidrIp: '203.0.113.4/32', FromPort: 2785, ToPort: 2785 }),
+      ]),
+    });
+  });
+
+  it('refuses to open the API to the whole internet', () => {
+    // Plain HTTP plus a WhatsApp-sending API behind one header. Not a warning; a hard stop.
+    expect(() => appStack({ 'openwa:adminCidr': '0.0.0.0/0' })).toThrow(/must not be 0\.0\.0\.0\/0/);
+  });
+
+  it('rejects a malformed adminCidr', () => {
+    expect(() => appStack({ 'openwa:adminCidr': '203.0.113.4' })).toThrow(/not an IPv4 CIDR/);
+    expect(() => appStack({ 'openwa:adminCidr': '999.0.0.1/32' })).toThrow(/not a valid IPv4 CIDR/);
+  });
+
   it('never opens port 22', () => {
     const template = appStack({ 'openwa:backendSecurityGroupId': 'sg-0123456789abcdef0' });
     const groups = template.findResources('AWS::EC2::SecurityGroup');
