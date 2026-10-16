@@ -685,6 +685,17 @@ describe('instance-side inputs that fail only at boot', () => {
     expect(code).not.toMatch(/docker inspect[^\n]*\|\| echo (absent|none|0)\)/);
   });
 
+  it('reads the instance id without piping IMDS into read', () => {
+    // The IMDSv2 token has no trailing newline, so `read -r token && curl ...` hit EOF, returned
+    // non-zero, skipped the second call, and every metric was published with InstanceId=unknown.
+    // The alarms are dimensioned on the real id, saw no data, and — treating missing data as
+    // breaching — sat in ALARM while the service was healthy.
+    const health = fs.readFileSync(path.join(__dirname, '..', 'runtime', 'healthcheck.sh'), 'utf8');
+    expect(health).not.toMatch(/read -r token &&/);
+    expect(health).toContain('IMDS_TOKEN=');
+    expect(health).toMatch(/metrics will not match the alarms/);
+  });
+
   it('does not let a CloudWatch agent failure abort the deployment', () => {
     // The agent is observability; the container is the service. A rejected agent config used to
     // abort install.sh under `set -e` before the container, the health timer or log shipping had
