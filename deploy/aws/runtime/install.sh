@@ -31,14 +31,34 @@ set -a && . "$CONFIG_FILE" && set +a
 # EC2 cannot report memory or filesystem use from the hypervisor, so the agent is the only way to
 # alarm on either. It also ships the bootstrap and deploy logs, which are the two places a failed
 # deployment explains itself.
+#
+# NOT fatal, deliberately. The agent is observability; the container is the service. Under
+# `set -e` a rejected agent config used to abort this script before the container, the health timer
+# or the log shipping had started, so a single unknown key in cloudwatch-agent.json took the whole
+# deployment down -- which is exactly what happened on this stack's first boot ("Additional property
+# _comment_aggregation is not allowed"). Losing metrics is worth a loud warning; it is not worth
+# losing the service. The alarms treat missing data as breaching, so a silent agent still pages.
 AGENT_DIR=/opt/aws/amazon-cloudwatch-agent/etc
-install -d -m 0755 "$AGENT_DIR"
-sed -e "s#@@SYSTEM_LOG_GROUP@@#${OPENWA_SYSTEM_LOG_GROUP}#g" \
-  -e "s#@@DATA_DIR@@#${DATA_DIR}#g" \
-  "${APP_DIR}/cloudwatch-agent.json" >"${AGENT_DIR}/openwa.json"
-/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
-  -a fetch-config -m ec2 -s -c "file:${AGENT_DIR}/openwa.json" >/dev/null
-log "cloudwatch agent configured"
+agent_ok=0
+if install -d -m 0755 "$AGENT_DIR" &&
+  sed -e "s#@@SYSTEM_LOG_GROUP@@#${OPENWA_SYSTEM_LOG_GROUP}#g" \
+    -e "s#@@DATA_DIR@@#${DATA_DIR}#g" \
+    "${APP_DIR}/cloudwatch-agent.json" >"${AGENT_DIR}/openwa.json"; then
+  if /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+    -a fetch-config -m ec2 -s -c "file:${AGENT_DIR}/openwa.json" >/tmp/cw-agent.log 2>&1; then
+    agent_ok=1
+  fi
+fi
+
+if [ "$agent_ok" = '1' ]; then
+  log 'cloudwatch agent configured'
+else
+  log 'WARNING the CloudWatch agent could not be configured. Metrics and log shipping are DEGRADED,'
+  log 'but the deployment continues: the container matters more than its telemetry. Agent output:'
+  sed 's/^/  /' /tmp/cw-agent.log 2>/dev/null | head -20 || true
+  log "Re-run after fixing ${APP_DIR}/cloudwatch-agent.json; validate it with"
+  log '  amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s -c file:<path>'
+fi
 
 # ------------------------------------------------------------- systemd ----
 for unit in openwa.service openwa-health.service openwa-health.timer; do

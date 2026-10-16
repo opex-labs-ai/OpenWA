@@ -78,9 +78,19 @@ read -r -d '' PROBE <<'PROBE_SCRIPT' || true
 set -u
 DATA_DIR="$(cat /etc/openwa-data-dir 2>/dev/null || echo /opt/openwa/data)"
 
+# Every reported value goes through field_or, which collapses the value to one line and substitutes
+# a default when it is empty. `docker inspect` on a missing container writes a blank line to stdout
+# and *then* fails, so the old `$(docker inspect ... || echo absent)` produced a newline followed by
+# "absent" and emitted the field across two lines. The parser then read `container` as empty and
+# reported "the container is , not running", which tells an operator nothing.
+field_or() {
+  value="$(tr -d '\r\n' | tr -s ' ')"
+  if [ -z "$value" ]; then printf '%s' "$1"; else printf '%s' "$value"; fi
+}
+
 deadline=$(($(date +%s) + READY_TIMEOUT))
 while :; do
-  now_container="$(docker inspect --format '{{.State.Status}}' openwa 2>/dev/null || echo absent)"
+  now_container="$(docker inspect --format '{{.State.Status}}' openwa 2>/dev/null | field_or absent)"
   if curl -fsS -m 5 http://127.0.0.1:2785/api/health/ready >/dev/null 2>&1; then
     now_ready=yes
   else
@@ -91,13 +101,13 @@ while :; do
   sleep 10
 done
 
-echo "cloud_init=$(cloud-init status 2>/dev/null | sed -n 's/^status: //p' || echo unknown)"
+echo "cloud_init=$(cloud-init status 2>/dev/null | sed -n 's/^status: //p' | field_or unknown)"
 echo "mounted=$(mountpoint -q "$DATA_DIR" && echo yes || echo no)"
-echo "data_uuid=$(findmnt -n -o UUID --target "$DATA_DIR" 2>/dev/null || echo none)"
-echo "disk_use=$(df -h --output=pcent "$DATA_DIR" 2>/dev/null | tail -1 | tr -d ' ' || echo unknown)"
-echo "container=$(docker inspect --format '{{.State.Status}}' openwa 2>/dev/null || echo absent)"
-echo "restarts=$(docker inspect --format '{{.RestartCount}}' openwa 2>/dev/null || echo 0)"
-echo "image=$(docker inspect --format '{{.Config.Image}}' openwa 2>/dev/null || echo none)"
+echo "data_uuid=$(findmnt -n -o UUID --target "$DATA_DIR" 2>/dev/null | field_or none)"
+echo "disk_use=$(df -h --output=pcent "$DATA_DIR" 2>/dev/null | tail -1 | field_or unknown)"
+echo "container=$(docker inspect --format '{{.State.Status}}' openwa 2>/dev/null | field_or absent)"
+echo "restarts=$(docker inspect --format '{{.RestartCount}}' openwa 2>/dev/null | field_or 0)"
+echo "image=$(docker inspect --format '{{.Config.Image}}' openwa 2>/dev/null | field_or none)"
 echo "runtime_env=$([ -s /opt/openwa/app/.env.runtime ] && echo present || echo missing)"
 echo "api_live=$(curl -fsS -m 5 http://127.0.0.1:2785/api/health/live >/dev/null 2>&1 && echo yes || echo no)"
 echo "api_ready=$(curl -fsS -m 5 http://127.0.0.1:2785/api/health/ready >/dev/null 2>&1 && echo yes || echo no)"

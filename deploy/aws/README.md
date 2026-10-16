@@ -436,27 +436,34 @@ rather than just the session directory.
 
 Three workflows, deliberately separate.
 
-| Workflow              | Trigger                                                | What it does                                                                   |
-| --------------------- | ------------------------------------------------------ | ------------------------------------------------------------------------------ |
-| `aws-cdk-deploy.yml`  | push to `main` touching `deploy/aws/**`, or manual     | Lint, typecheck, test, validate, then `cdk diff` and `cdk deploy`, then verify |
-| `aws-app-deploy.yml`  | automatically after a successful CDK Deploy, or manual | Sends the runtime bundle to the instance over SSM and restarts the container   |
-| `aws-cdk-destroy.yml` | manual only, with a typed confirmation                 | Destroys the stack, refusing if the volume's retention has been weakened       |
+| Workflow              | Trigger                                            | What it does                                                                   |
+| --------------------- | -------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `aws-cdk-deploy.yml`  | push to `main` touching `deploy/aws/**`, or manual | Lint, typecheck, test, validate, then `cdk diff` and `cdk deploy`, then verify |
+| `aws-app-deploy.yml`  | manual only                                        | Re-applies the published bundle and restarts the container                     |
+| `aws-cdk-destroy.yml` | manual only, with a typed confirmation             | Destroys the stack, refusing if the volume's retention has been weakened       |
 
 Both deploy workflows run under the `production` environment, hold `id-token: write` and
 `contents: read` and nothing else, use concurrency groups that queue rather than cancel, and pin
 every action to a commit SHA. None uses `pull_request_target`.
 
-**The two are chained, not independently triggered.** `aws-app-deploy.yml` fires on
-`workflow_run` after CDK Deploy succeeds, and never on a bare push. The reason is that the runtime
-bundle reaches the instance through an SSM parameter holding its S3 URL, and only `cdk deploy`
-publishes a new bundle and updates that parameter. A push trigger on `deploy/aws/runtime/**` raced
-the infrastructure deploy and usually re-applied the _previous_ bundle while reporting success.
-Chaining also means a change to `openwa:imageRef` in `cdk.json` actually rolls out: previously it
-only rewrote the SSM config parameter and nothing re-ran `deploy.sh` to pull the new image.
+**CDK Deploy applies the bundle itself**, in a step between `cdk deploy` and verification. That
+step is not optional plumbing — it is what makes a deployment take effect. `cdk deploy` publishes
+the bundle and updates the SSM parameter pointing at it, but nothing on the instance re-reads that
+parameter by itself: user data runs once, at first boot. Without the apply step a deploy publishes a
+new bundle, leaves the instance running the old one, and then verifies the old one as a success.
 
-So a single push that touches `deploy/aws/**` runs CDK Deploy, and then App Deploy applies whatever
-it published. A manual `workflow_dispatch` of App Deploy re-applies the bundle currently published,
-which is the right tool for re-running a failed rollout.
+Both workflows call the same `scripts/apply-runtime-bundle.sh`, so they cannot drift. It waits for
+cloud-init to finish before refreshing, so it cannot race the first-boot invocation and have two
+`docker compose up` runs fighting over one session volume.
+
+App Deploy is therefore **manual only**. It used to chain off CDK Deploy's success, which deadlocked:
+a first boot that failed left no container, so verification failed, so CDK Deploy failed, so the
+chained rollout never ran, so the fixed bundle was never applied — and every later deploy failed
+the same way. It is now the on-demand tool for re-running a failed rollout or re-applying after an
+instance replacement.
+
+A single push touching `deploy/aws/**` is all that is needed: CDK Deploy provisions, applies and
+verifies in that order.
 
 > **What automatic deployment does not include.** The deployment runs a digest-pinned _upstream_
 > image, so changes to this repository's application source do not reach the instance. If you intend
@@ -712,8 +719,8 @@ npx cdk diff OpenwaStack
 ```
 
 Commit and push. **AWS CDK Deploy** publishes the new runtime config parameter, and **AWS App
-Deploy** then runs automatically on its success to pull the image and restart the container — no
-second manual step. Updating the digest does not replace the instance, because the digest lives in
+Deploy** applies it in the same run, pulling the image and restarting the container — no second
+workflow needed. Updating the digest does not replace the instance, because the digest lives in
 the SSM parameter rather than in user data.
 
 `validate-config.sh` and the config loader both reject a reference without `@sha256:`, so a mutable

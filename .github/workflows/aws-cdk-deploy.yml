@@ -118,6 +118,22 @@ jobs:
             --require-approval never \
             --progress events
 
+      # `cdk deploy` publishes the runtime bundle and the SSM parameter pointing at it, but nothing
+      # on the instance re-reads that parameter on its own: user data runs once, at first boot. So
+      # the instance keeps running the previous bundle until openwa-refresh is invoked, which is
+      # what this does. Without it, a deploy appears to succeed while changing nothing on the box,
+      # and a first boot that failed could never be repaired by a later deploy.
+      #
+      # This runs BEFORE verification on purpose: verifying the old bundle and calling it a
+      # successful deployment of the new one is the failure this ordering prevents.
+      - name: Apply the runtime bundle
+        if: ${{ (inputs.stack || 'OpenwaStack') == 'OpenwaStack' }}
+        working-directory: ${{ env.CDK_DIR }}
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          STACK_NAME: ${{ inputs.stack || 'OpenwaStack' }}
+        run: bash scripts/apply-runtime-bundle.sh
+
       - name: Verify the deployment
         working-directory: ${{ env.CDK_DIR }}
         env:
