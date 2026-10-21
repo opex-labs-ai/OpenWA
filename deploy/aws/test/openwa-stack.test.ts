@@ -215,9 +215,19 @@ describe('OpenwaStack: network exposure', () => {
     });
   });
 
-  it('refuses to open the API to the whole internet', () => {
-    // Plain HTTP plus a WhatsApp-sending API behind one header. Not a warning; a hard stop.
-    expect(() => appStack({ 'openwa:adminCidr': '0.0.0.0/0' })).toThrow(/must not be 0\.0\.0\.0\/0/);
+  it('opens to the whole internet only when asked explicitly, never by default', () => {
+    // This was a hard error until an operator needed access from a residential IP that kept moving
+    // and locking them out. It is now permitted, because pretending a configuration is impossible
+    // is worse than allowing it with the consequence stated — but it must never arrive by accident.
+    for (const group of Object.values(appStack().findResources('AWS::EC2::SecurityGroup'))) {
+      for (const rule of asList(group.Properties?.SecurityGroupIngress) as Record<string, unknown>[]) {
+        expect(rule.CidrIp).not.toBe('0.0.0.0/0');
+      }
+    }
+
+    appStack({ 'openwa:adminCidr': '0.0.0.0/0' }).hasResourceProperties('AWS::EC2::SecurityGroup', {
+      SecurityGroupIngress: Match.arrayWith([Match.objectLike({ CidrIp: '0.0.0.0/0', FromPort: 2785 })]),
+    });
   });
 
   it('rejects a malformed adminCidr', () => {

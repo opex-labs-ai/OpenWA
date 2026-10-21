@@ -119,14 +119,29 @@ export class OpenwaEc2 extends Construct {
         `Operator browser access from ${config.adminCidr} (plain HTTP)`,
       );
 
-      Annotations.of(this).addWarningV2(
-        'openwa:public-admin-access',
-        `openwa:adminCidr opens port ${APP_PORT} to ${config.adminCidr} over the public internet. ` +
-          'The API speaks plain HTTP, so the API key crosses the internet in cleartext and that key ' +
-          'can send WhatsApp messages as the linked account. A residential IP also changes, after ' +
-          'which the rule stops working. Prefer the SSM port-forwarding tunnel, which needs no ' +
-          'ingress rule at all; remove this value once the browser session is no longer needed.',
-      );
+      const prefixLength = Number(config.adminCidr.split('/')[1]);
+      if (prefixLength === 0) {
+        Annotations.of(this).addWarningV2(
+          'openwa:admin-access-open-to-world',
+          `openwa:adminCidr is ${config.adminCidr}, so port ${APP_PORT} is reachable from THE ` +
+            'ENTIRE INTERNET. The API speaks plain HTTP: the key crosses the network in cleartext ' +
+            'on every request, and whoever reads it can send WhatsApp messages as the linked ' +
+            'account and read its history. Anyone can also reach the login page and try keys ' +
+            'against it. This is a deliberate operator choice, not a default. The SSM ' +
+            'port-forwarding tunnel gives the same access from any network with no ingress rule at ' +
+            'all, and an HTTPS load balancer is the supported way to expose this. Narrow it to a ' +
+            '/32 or remove it once it is no longer needed.',
+        );
+      } else {
+        Annotations.of(this).addWarningV2(
+          'openwa:public-admin-access',
+          `openwa:adminCidr opens port ${APP_PORT} to ${config.adminCidr} over the public internet. ` +
+            'The API speaks plain HTTP, so the API key crosses the internet in cleartext and that key ' +
+            'can send WhatsApp messages as the linked account. A residential IP also changes, after ' +
+            'which the rule stops working. Prefer the SSM port-forwarding tunnel, which needs no ' +
+            'ingress rule at all; remove this value once the browser session is no longer needed.',
+        );
+      }
     }
 
     // -------------------------------------------------------------- secret ----
