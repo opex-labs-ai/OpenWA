@@ -200,13 +200,11 @@ export function resolveConfig(app: App): OpenwaConfig {
     if (octets.some(o => o > 255) || prefix > 32) {
       throw new ConfigError(`adminCidr "${adminCidr}" is not a valid IPv4 CIDR`);
     }
-    if (prefix === 0) {
-      throw new ConfigError(
-        'adminCidr must not be 0.0.0.0/0. That publishes an unencrypted, WhatsApp-sending API to ' +
-          'the entire internet behind a single header, which no deployment of this shape should do. ' +
-          'Use a /32, or put an HTTPS load balancer in front if the API genuinely needs to be public.',
-      );
-    }
+    // A /0 is permitted, but only as an explicit operator decision: it publishes an unencrypted,
+    // WhatsApp-sending API to the entire internet behind one header. This was a hard error until an
+    // operator needed access from a residential IP that kept changing and locking them out. The
+    // honest answer is to allow it and make the consequence impossible to miss on every synth,
+    // rather than to pretend the configuration cannot be expressed.
   }
 
   const peerVpcId = optionalString(app, 'peerVpcId');
